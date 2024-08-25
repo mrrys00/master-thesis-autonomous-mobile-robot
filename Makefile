@@ -57,6 +57,7 @@ prepare_ros2_workspace:
 	mkdir -p $(ROS2_WORKSPACE)$(SRC)
 	mkdir -p $(ROS2_WORKSPACE)$(RESULTS)
 	$(MAKE) prepare_urg2_node
+	$(MAKE) prepare_frontier_base_exploration_algorithm
 	$(MAKE) copy_nodes
 	$(MAKE) build_ros2_workspace
 
@@ -68,6 +69,11 @@ prepare_urg2_node:
 	cat ../../nodes/config/params_serial.yaml > urg_node2/config/params_serial.yaml; \
 	rosdep update; \
 	rosdep install -i --from-paths urg_node2
+
+prepare_frontier_base_exploration_algorithm:
+	mkdir temporary/; \
+	git clone --recursive https://github.com/abdulkadrtr/ROS2-FrontierBaseExplorationForAutonomousRobot.git temporary/; \
+	cp -r temporary/autonomous_exploration/ $(ROS2_WORKSPACE)$(SRC)
 
 copy_nodes:
 	cp -r $(PROJECT_ROOT)$(NODES)$(NODE_PROJECT_BRINGUP) $(PROJECT_ROOT)$(NODES)$(NODE_MIABOT) $(PROJECT_ROOT)$(NODES)$(NODE_EXPLORATION) $(ROS2_WORKSPACE)$(SRC)
@@ -94,6 +100,7 @@ remove_ros2_workspace:
 #	ros2 launch nav2_bringup rviz_launch.py
 #	ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file src/project_bringup/config/slam.yaml
 #	ros2 launch nav2_bringup navigation_launch.py params_file:="src/project_bringup/config/nav2_params.yaml"
+#	ros2 run exploration_algorithm random_direction_node
 
 prepare_robot:
 	# $(MAKE) install_ros2_humble
