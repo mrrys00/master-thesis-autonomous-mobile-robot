@@ -1,6 +1,6 @@
 import rclpy
 
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
@@ -13,6 +13,7 @@ from tf2_msgs.msg import TFMessage
 
 from math import pi, sin, cos
 from random import choice as rand_choice
+from collections import deque
 
 FIND_GOAL_DELAY = 16.0
 GOAL_AREA_NUM = 9
@@ -27,7 +28,7 @@ class ExplorationAlgorithm(Node):
         # Subscribe /map
         self.map_subscription = self.create_subscription(
             OccupancyGrid,
-            'map',
+            '/map',
             self.map_callback,
             10)
         
@@ -44,6 +45,13 @@ class ExplorationAlgorithm(Node):
             '/scan',
             self.scan_callback,
             10)
+        
+        self.amcl_pose_subscription = self.create_subscription(
+            PoseWithCovarianceStamped,
+            'amcl_pose',
+            self.amcl_pose_callback,
+            10
+        )
         
         # Create navigation client
         self.navigation_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
@@ -76,6 +84,7 @@ class ExplorationAlgorithm(Node):
         self.latest_position: TransformStamped = _init_position()
         self.latest_scan: LaserScan = LaserScan()
         self.latest_map: OccupancyGrid = OccupancyGrid()
+        self.latest_amcl_pose: PoseWithCovarianceStamped= PoseWithCovarianceStamped()
 
         self.find_goal_timer = self.create_timer(FIND_GOAL_DELAY, self.find_goal)
 
@@ -99,44 +108,145 @@ class ExplorationAlgorithm(Node):
         """
         self.latest_scan = msg
 
+    def amcl_pose_callback(self, msg: PoseWithCovarianceStamped):
+        """
+        Take amcl pose message
+        """
+        self.latest_amcl_pose = msg
+
     def find_goal(self):
         """
-        Find next goal based on Monte Carlo area choose
+        Find next goal based on nearest unexplored cell choose
         """
-        _areas_mean_dist: list[float] = []
-        allowed_areas_idxes: list[int] = []
-        latest_scans_num = len(self.latest_scan.ranges)
+        _resolution = self.latest_map.info.resolution
+        _width, _height = self.latest_map.info.width, self.latest_map.info.height
+        _robot_x, _robot_y = self.latest_amcl_pose.pose.pose.position.x, self.latest_amcl_pose.pose.pose.position.y
+        _origin_x, _origin_y = self.latest_map.info.origin.position.x, self.latest_map.info.origin.position.y
+        _linear_grid = self.latest_map.data
+        unknown_space = -1
+        free_space = 0
+        occupied_space = 100
+        unreachable_position_marker = 100
+        robot_position_marker = 2
+        goal_position_marker = 5
 
-        full_scan_area = 3/2*pi     # 270 deg - lidar area
-        single_area_radian = full_scan_area / GOAL_AREA_NUM
+        # calculate and mark robot position in grid 
+        grid_x, grid_y = int((_robot_x - _origin_x) / _resolution), int((_robot_y - _origin_y) / _resolution)
+        if 0 <= grid_x < _width and 0 <= grid_y < _height:
+            linear_idx = grid_y *_width + grid_x
+            _linear_grid[linear_idx] = robot_position_marker
 
-        for area_num in range(GOAL_AREA_NUM):
-            area_dist = 0.0
-            for _scan in self.latest_scan.ranges[
-                latest_scans_num//GOAL_AREA_NUM*area_num
-                :latest_scans_num//GOAL_AREA_NUM*(area_num+1)]:
-                if _scan: area_dist += float(_scan)
+        # convert to 2d list
+        _2d_list = []
+        for i in range(_height):
+            row = _linear_grid[i : _width(i+1)*_width]
+            _2d_list.append(row)
+
+        _2d_list = self.process_grid_to_find_new_goal(
+            unknown_space,
+            free_space,
+            occupied_space,
+            unreachable_position_marker,
+            robot_position_marker,
+            goal_position_marker
+        )
+
+        # TO DO
+        # 1. precess new goal to coordinates
+        # 2. send coordinates
+
+
+        # _areas_mean_dist: list[float] = []
+        # allowed_areas_idxes: list[int] = []
+        # latest_scans_num = len(self.latest_scan.ranges)
+
+        # full_scan_area = 3/2*pi     # 270 deg - lidar area
+        # single_area_radian = full_scan_area / GOAL_AREA_NUM
+
+        # print("map", type(self.latest_map), self.latest_map)
+
+        # for area_num in range(GOAL_AREA_NUM):
+        #     area_dist = 0.0
+        #     for _scan in self.latest_scan.ranges[
+        #         latest_scans_num//GOAL_AREA_NUM*area_num
+        #         :latest_scans_num//GOAL_AREA_NUM*(area_num+1)]:
+        #         if _scan: area_dist += float(_scan)
             
-            area_dist /= latest_scans_num/GOAL_AREA_NUM     # get mean distance for the area
-            _areas_mean_dist.append(area_dist)
+        #     area_dist /= latest_scans_num/GOAL_AREA_NUM     # get mean distance for the area
+        #     _areas_mean_dist.append(area_dist)
 
-        # find allowed areas; area is allowed when mean scan distance is greater than ALLOWED_AVG_DIST
-        for area_idx, area_mean_dist in enumerate(_areas_mean_dist):
-            if area_mean_dist > ALLOWED_AVG_DIST: allowed_areas_idxes.append(area_idx)
+        # # find allowed areas; area is allowed when mean scan distance is greater than ALLOWED_AVG_DIST
+        # for area_idx, area_mean_dist in enumerate(_areas_mean_dist):
+        #     if area_mean_dist > ALLOWED_AVG_DIST: allowed_areas_idxes.append(area_idx)
 
-        new_cords = PoseStamped()
-        if not allowed_areas_idxes:
-            # if no area allowed
-            new_cords = self.prepare_pose_stamped(-0.2, pi)
-        else: 
-            # possible to set next goal, choose one of allowed cords
-            choosen_area_idx = rand_choice(allowed_areas_idxes)
-            new_cords = self.prepare_pose_stamped(
-                _areas_mean_dist[choosen_area_idx] * 0.7,
-                -full_scan_area/2 + choosen_area_idx*single_area_radian + single_area_radian/2
-            )
+        # new_cords = PoseStamped()
+        # if not allowed_areas_idxes:
+        #     # if no area allowed
+        #     new_cords = self.prepare_pose_stamped(-0.2, pi)
+        # else: 
+        #     # possible to set next goal, choose one of allowed cords
+        #     choosen_area_idx = rand_choice(allowed_areas_idxes)
+        #     new_cords = self.prepare_pose_stamped(
+        #         _areas_mean_dist[choosen_area_idx] * 0.7,
+        #         -full_scan_area/2 + choosen_area_idx*single_area_radian + single_area_radian/2
+        #     )
         
-        self.send_navigation_goal(new_cords)
+        # print("here nav goal sent ...")
+        # self.send_navigation_goal(new_cords)
+            
+    def process_grid_to_find_new_goal(
+            self, 
+            _grid: list[list],
+            unknown_space: int,
+            free_space: int,
+            occupied_space: int,
+            unreachable_position_marker: int,
+            robot_position_marker: int,
+            goal_position_marker: int
+        ) -> tuple[int, int]:
+        """
+        Finds the possible nearest point to explore
+        """
+        # Find the position of robot
+        start = None
+        for i in range(len(_grid)):
+            for j in range(len(_grid[i])):
+                if _grid[i][j] == robot_position_marker:
+                    start = (i, j)
+                    break
+            if start:
+                break
+
+        # BFS setup
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # Up, Down, Left, Right
+        queue = deque([start])
+        visited = set()
+        visited.add(start)
+        found_unknown = False
+
+        while queue and not found_unknown:
+            x, y = queue.popleft()
+
+            for dx, dy in directions:
+                nx, ny = x + dx, y + dy
+
+                # Ensure within bounds and not already visited
+                if 0 <= nx < len(_grid) and 0 <= ny < len(_grid[0]) and (nx, ny) not in visited:
+                    if _grid[nx][ny] == free_space:  # Free space, continue exploring
+                        queue.append((nx, ny))
+                        visited.add((nx, ny))
+                    elif _grid[nx][ny] == unknown_space:  # Found unknown terrain
+                        _grid[nx][ny] = goal_position_marker
+                        found_unknown = True
+                        break
+
+        # Mark unreachable space
+        for i in range(len(_grid)):
+            for j in range(len(_grid[i])):
+                if _grid[i][j] == free_space and (i, j) not in visited:
+                    _grid[i][j] = unreachable_position_marker
+
+        return _grid
 
     def prepare_pose_stamped(self, straight_dist: float, angle_delta: float) -> PoseStamped:
         """

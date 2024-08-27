@@ -20,7 +20,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            f'{random_direction_node_name} = {package_name}.{random_direction_node_name}:main'
+            f'{random_direction_node_name} = {package_name}.{random_direction_node_name}:main',
             f'{planned_node_name} = {package_name}.{planned_node_name}:main'
         ],
     },
