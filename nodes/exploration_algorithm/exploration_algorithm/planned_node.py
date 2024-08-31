@@ -151,6 +151,17 @@ class ExplorationAlgorithm(Node):
             goal_position_marker
         )
 
+        _goal_x, _goal_y = None, None
+        for _y, _row in enumerate(_2d_list):
+            for _x, _cell in enumerate(_row):
+                if _cell == goal_position_marker:
+                    _goal_x, _goal_y = _origin_x + _x*_resolution, _origin_y + _y*_resolution
+                    break
+        else:
+            self.get_logger().warning("Goal position not found!")
+
+
+
         # TO DO
         # 1. precess new goal to coordinates
         # 2. send coordinates
@@ -191,8 +202,13 @@ class ExplorationAlgorithm(Node):
         #         -full_scan_area/2 + choosen_area_idx*single_area_radian + single_area_radian/2
         #     )
         
-        # print("here nav goal sent ...")
-        # self.send_navigation_goal(new_cords)
+        new_cords = PoseStamped()
+        if _goal_y is not None and _goal_x is not None:
+            new_cords = self.prepare_pose_stamped(_goal_x, _goal_y)
+            self.send_navigation_goal(new_cords)
+            self.get_logger().info("Navigation goal sent to x=%s v=%s", _goal_x, _goal_y)
+        else:
+            self.get_logger().warning("Navigation goal NOT sent")
             
     def process_grid_to_find_new_goal(
             self, 
@@ -248,12 +264,13 @@ class ExplorationAlgorithm(Node):
 
         return _grid
 
-    def prepare_pose_stamped(self, straight_dist: float, angle_delta: float) -> PoseStamped:
+    def prepare_pose_stamped(self, _x: float, _y: float) -> PoseStamped:
         """
-        Prepare PoseStamped message structure from distance and actual position
+        Prepare PoseStamped message structure from goal x and y
         """
-        _x, _y, _theta = self.process_to_cords(straight_dist, angle_delta)
+        # _x, _y, _theta = self.process_to_cords(straight_dist, angle_delta)
 
+        _theta = 0.5    # hardcode
         goal_pose = PoseStamped()
         goal_pose.header = Header()
         goal_pose.header.frame_id = 'map'
@@ -265,6 +282,24 @@ class ExplorationAlgorithm(Node):
         goal_pose.pose.orientation.w = cos(_theta / 2.0)
 
         return goal_pose
+
+    # def prepare_pose_stamped(self, straight_dist: float, angle_delta: float) -> PoseStamped:
+    #     """
+    #     Prepare PoseStamped message structure from distance and actual position
+    #     """
+    #     _x, _y, _theta = self.process_to_cords(straight_dist, angle_delta)
+
+    #     goal_pose = PoseStamped()
+    #     goal_pose.header = Header()
+    #     goal_pose.header.frame_id = 'map'
+    #     goal_pose.header.stamp = self.get_clock().now().to_msg()
+        
+    #     goal_pose.pose.position.x = _x
+    #     goal_pose.pose.position.y = _y
+    #     goal_pose.pose.orientation.z = sin(_theta / 2.0)
+    #     goal_pose.pose.orientation.w = cos(_theta / 2.0)
+
+    #     return goal_pose
 
     def process_to_cords(self, straight_dist: float, angle_delta: float) -> tuple[int, int] or None:
         """
