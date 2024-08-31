@@ -18,6 +18,7 @@ from collections import deque
 FIND_GOAL_DELAY = 5.0
 GOAL_DELTA = 0.05
 MAX_GOAL_RETRIES = 5
+ROBOT_RADIUS = 0.1      # for mocking
 
 class ExplorationAlgorithm(Node):
 
@@ -141,7 +142,6 @@ class ExplorationAlgorithm(Node):
         _resolution = self.latest_map.info.resolution
         _width, _height = self.latest_map.info.width, self.latest_map.info.height
         _robot_x, _robot_y = self.latest_position.transform.translation.x, self.latest_position.transform.translation.y
-        # _robot_x, _robot_y = self.latest_amcl_pose.pose.pose.position.x, self.latest_amcl_pose.pose.pose.position.y
         _origin_x, _origin_y = self.latest_map.info.origin.position.x, self.latest_map.info.origin.position.y
         _linear_grid = list(self.latest_map.data)
         unknown_space = -1
@@ -154,6 +154,8 @@ class ExplorationAlgorithm(Node):
         if _resolution == 0:
             self.get_logger().info(f"Resolution {_resolution} error")
             return
+        
+        self.get_logger().info(f"_resolution : {_resolution}")
 
         # calculate and mark robot position in grid 
         grid_x, grid_y = int((_robot_x - _origin_x) / _resolution), int((_robot_y - _origin_y) / _resolution)
@@ -175,7 +177,8 @@ class ExplorationAlgorithm(Node):
             occupied_space,
             unreachable_position_marker,
             robot_position_marker,
-            goal_position_marker
+            goal_position_marker,
+            _resolution
         )
 
         _goal_x, _goal_y = None, None
@@ -203,7 +206,8 @@ class ExplorationAlgorithm(Node):
             occupied_space: int,
             unreachable_position_marker: int,
             robot_position_marker: int,
-            goal_position_marker: int
+            goal_position_marker: int,
+            _resolution: float
         ) -> tuple[int, int]:
         """
         Finds the possible nearest point to explore
@@ -219,6 +223,20 @@ class ExplorationAlgorithm(Node):
                 break
         
         self.get_logger().info(f"Start position found as {start}")
+
+        # mock fields under the robot are known and visited
+        _x, _y = start[0], start[1]
+        mock_radius = int(ROBOT_RADIUS//_resolution) + 1
+        start_x = max(_x, _x - mock_radius)
+        end_x = min(len(_grid[0]) - 1, _x + mock_radius)
+        start_y = max(_y, _y - mock_radius)
+        end_y = min(len(_grid) - 1, _y + mock_radius)
+        
+        for y in range(start_y, end_y + 1):
+            for x in range(start_x, end_x + 1):
+                if _grid[y][x] == unknown_space:
+                    _grid[y][x] = free_space
+
         # BFS setup
         directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # Up, Down, Left, Right
         queue = deque([start])
