@@ -15,15 +15,15 @@ from math import pi, sin, cos
 from random import choice as rand_choice
 from collections import deque
 
-FIND_GOAL_DELAY = 16.0
-GOAL_AREA_NUM = 9
-ALLOWED_AVG_DIST = 0.3
+FIND_GOAL_DELAY = 5.0
+GOAL_DELTA = 0.05
+MAX_GOAL_RETRIES = 5
 
 class ExplorationAlgorithm(Node):
 
     def __init__(self):
         super().__init__('exploration_algorithm')
-        self.get_logger().info('Exploration algorithm is running')
+        self.get_logger().info('Exploration algorithm is running!')
 
         # Subscribe /map
         self.map_subscription = self.create_subscription(
@@ -85,6 +85,8 @@ class ExplorationAlgorithm(Node):
         self.latest_scan: LaserScan = LaserScan()
         self.latest_map: OccupancyGrid = OccupancyGrid()
         self.latest_amcl_pose: PoseWithCovarianceStamped= PoseWithCovarianceStamped()
+        self.latest_goal: PoseStamped = PoseStamped()
+        self.goal_retries: int = 0
 
         self.find_goal_timer = self.create_timer(FIND_GOAL_DELAY, self.find_goal)
 
@@ -114,15 +116,34 @@ class ExplorationAlgorithm(Node):
         """
         self.latest_amcl_pose = msg
 
+    def verify_goal(self):
+        """
+        Verify if robot reached its goal
+        """
+        if self.goal_retries >= MAX_GOAL_RETRIES:
+            self.get_logger().warning(f"Old goal x={self.latest_goal.pose.position.x} y={self.latest_goal.pose.position.y} not reached -> allow to find new goal")
+            return True
+
+        self.goal_retries += 1
+        return \
+            (self.latest_amcl_pose.pose.pose.position.x - self.latest_goal.pose.position.x)**2 + \
+            (self.latest_amcl_pose.pose.pose.position.y - self.latest_goal.pose.position.y)**2 <= GOAL_DELTA
+
     def find_goal(self):
         """
         Find next goal based on nearest unexplored cell choose
         """
+        if not self.verify_goal():
+            self.get_logger().info(f"Robot is trying to reach its goal x={self.latest_goal.pose.position.x} y={self.latest_goal.pose.position.y}")
+            return
+
+        self.goal_retries = 0
         _resolution = self.latest_map.info.resolution
         _width, _height = self.latest_map.info.width, self.latest_map.info.height
-        _robot_x, _robot_y = self.latest_amcl_pose.pose.pose.position.x, self.latest_amcl_pose.pose.pose.position.y
+        _robot_x, _robot_y = self.latest_position.transform.translation.x, self.latest_position.transform.translation.y
+        # _robot_x, _robot_y = self.latest_amcl_pose.pose.pose.position.x, self.latest_amcl_pose.pose.pose.position.y
         _origin_x, _origin_y = self.latest_map.info.origin.position.x, self.latest_map.info.origin.position.y
-        _linear_grid = self.latest_map.data
+        _linear_grid = list(self.latest_map.data)
         unknown_space = -1
         free_space = 0
         occupied_space = 100
@@ -130,19 +151,25 @@ class ExplorationAlgorithm(Node):
         robot_position_marker = 2
         goal_position_marker = 5
 
+        if _resolution == 0:
+            self.get_logger().info(f"Resolution {_resolution} error")
+            return
+
         # calculate and mark robot position in grid 
         grid_x, grid_y = int((_robot_x - _origin_x) / _resolution), int((_robot_y - _origin_y) / _resolution)
         if 0 <= grid_x < _width and 0 <= grid_y < _height:
             linear_idx = grid_y *_width + grid_x
             _linear_grid[linear_idx] = robot_position_marker
+            self.get_logger().info(f"Robot position updated to {linear_idx}")
 
         # convert to 2d list
         _2d_list = []
         for i in range(_height):
-            row = _linear_grid[i : _width(i+1)*_width]
+            row = _linear_grid[i*_width : (i+1)*_width]
             _2d_list.append(row)
 
         _2d_list = self.process_grid_to_find_new_goal(
+            _2d_list,
             unknown_space,
             free_space,
             occupied_space,
@@ -160,53 +187,11 @@ class ExplorationAlgorithm(Node):
         else:
             self.get_logger().warning("Goal position not found!")
 
-
-
-        # TO DO
-        # 1. precess new goal to coordinates
-        # 2. send coordinates
-
-
-        # _areas_mean_dist: list[float] = []
-        # allowed_areas_idxes: list[int] = []
-        # latest_scans_num = len(self.latest_scan.ranges)
-
-        # full_scan_area = 3/2*pi     # 270 deg - lidar area
-        # single_area_radian = full_scan_area / GOAL_AREA_NUM
-
-        # print("map", type(self.latest_map), self.latest_map)
-
-        # for area_num in range(GOAL_AREA_NUM):
-        #     area_dist = 0.0
-        #     for _scan in self.latest_scan.ranges[
-        #         latest_scans_num//GOAL_AREA_NUM*area_num
-        #         :latest_scans_num//GOAL_AREA_NUM*(area_num+1)]:
-        #         if _scan: area_dist += float(_scan)
-            
-        #     area_dist /= latest_scans_num/GOAL_AREA_NUM     # get mean distance for the area
-        #     _areas_mean_dist.append(area_dist)
-
-        # # find allowed areas; area is allowed when mean scan distance is greater than ALLOWED_AVG_DIST
-        # for area_idx, area_mean_dist in enumerate(_areas_mean_dist):
-        #     if area_mean_dist > ALLOWED_AVG_DIST: allowed_areas_idxes.append(area_idx)
-
-        # new_cords = PoseStamped()
-        # if not allowed_areas_idxes:
-        #     # if no area allowed
-        #     new_cords = self.prepare_pose_stamped(-0.2, pi)
-        # else: 
-        #     # possible to set next goal, choose one of allowed cords
-        #     choosen_area_idx = rand_choice(allowed_areas_idxes)
-        #     new_cords = self.prepare_pose_stamped(
-        #         _areas_mean_dist[choosen_area_idx] * 0.7,
-        #         -full_scan_area/2 + choosen_area_idx*single_area_radian + single_area_radian/2
-        #     )
-        
         new_cords = PoseStamped()
         if _goal_y is not None and _goal_x is not None:
             new_cords = self.prepare_pose_stamped(_goal_x, _goal_y)
             self.send_navigation_goal(new_cords)
-            self.get_logger().info("Navigation goal sent to x=%s v=%s", _goal_x, _goal_y)
+            self.get_logger().info(f"Navigation goal sent to x={_goal_x} y={_goal_y}")
         else:
             self.get_logger().warning("Navigation goal NOT sent")
             
@@ -232,7 +217,8 @@ class ExplorationAlgorithm(Node):
                     break
             if start:
                 break
-
+        
+        self.get_logger().info(f"Start position found as {start}")
         # BFS setup
         directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # Up, Down, Left, Right
         queue = deque([start])
@@ -326,6 +312,7 @@ class ExplorationAlgorithm(Node):
         """
         self.get_logger().info(f'Sending navigation goal as xyzw: ({goal_pose.pose.position.x}, {goal_pose.pose.position.y}, {goal_pose.pose.orientation.z}, {goal_pose.pose.orientation.w})')
 
+        self.latest_goal = goal_pose
         # prepare goal
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose = goal_pose
