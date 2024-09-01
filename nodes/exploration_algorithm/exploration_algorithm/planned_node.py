@@ -227,10 +227,10 @@ class ExplorationAlgorithm(Node):
         # mock fields under the robot are known and visited
         _x, _y = start[0], start[1]
         mock_radius = int(ROBOT_RADIUS//_resolution) + 1
-        start_x = max(_x, _x - mock_radius)
-        end_x = min(len(_grid[0]) - 1, _x + mock_radius)
-        start_y = max(_y, _y - mock_radius)
-        end_y = min(len(_grid) - 1, _y + mock_radius)
+        start_x = _x - mock_radius
+        end_x = _x + mock_radius
+        start_y = _y - mock_radius
+        end_y = _y + mock_radius
         
         for y in range(start_y, end_y + 1):
             for x in range(start_x, end_x + 1):
