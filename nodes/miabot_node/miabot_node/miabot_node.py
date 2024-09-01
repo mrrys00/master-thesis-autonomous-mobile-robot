@@ -8,9 +8,9 @@ from tf2_msgs.msg import TFMessage
 
 from math import pi, sin, cos
 
-LINEAR_FACTOR = 500         # 1 real meter = 1.0 /cmd_vel = 25317 robot units
+LINEAR_FACTOR = 450         # 1 real meter = 1.0 /cmd_vel = 25317 robot units
 DELTA_RADIUS = 0.034        # distance between singe wheel and robot center
-ODOM_FREQUENCY = 2**5       # odometry messages per second -> optimal 2**5 (minimum 20Hz)
+ODOM_FREQUENCY = 50         # odometry messages per second -> optimal 2**5 (minimum 20Hz)
 
 MAX_SAFE_VELOCITY = 120
 
