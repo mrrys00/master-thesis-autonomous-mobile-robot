@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>map_json_node</name>
+  <version>0.0.1</version>
+  <description>Map to json dumper node</description>
+  <author email="rysszymon00@gmail.com">Szymon Ryś</author>
+  <author email="tekielskirafal@gmail.com">Rafał Tekielski</author>
+  <maintainer email="rysszymon00@gmail.com">Szymon Ryś</maintainer>
+  <maintainer email="tekielskirafal@gmail.com">Rafał Tekielski</maintainer>
+  <license>MIT License</license>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
