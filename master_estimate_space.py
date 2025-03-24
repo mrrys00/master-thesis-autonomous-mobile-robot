@@ -1,6 +1,6 @@
 from json import load
 
-DIRPATH = 'example_maps_v3'
+DIRPATH = 'maps/example_maps_v3'
 MAP_001 = 'map_20250124_212336_852796.json'
 
 val_free = 0
@@ -13,9 +13,9 @@ key_info = 'info'
 key_width = 'width'
 key_height = 'width'
 
-def calculate_remaining_space():
+def calculate_remaining_space(_dir_path: str=DIRPATH, _map_path: str=MAP_001):
     _data = dict()
-    with open(DIRPATH + '/' + MAP_001, 'r+') as json_data:
+    with open(_dir_path + '/' + _map_path, 'r+') as json_data:
         _data = load(json_data)
         json_data.close()
         
