@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>map_json_node</name>
-  <version>0.0.1</version>
-  <description>Map to json dumper node</description>
+  <name>map_predictor</name>
+  <version>1.0.0</version>
+  <description>Map processor node</description>
   <author email="rysszymon00@gmail.com">Szymon Ryś</author>
   <maintainer email="rysszymon00@gmail.com">Szymon Ryś</maintainer>
   <license>MIT License</license>
