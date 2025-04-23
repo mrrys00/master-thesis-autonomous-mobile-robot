@@ -4,7 +4,8 @@
   <name>map_predictor</name>
   <version>0.0.1</version>
   <description>Map predictor node</description>
-  <maintainer email="rysszymon00@gmail.com">szymon</maintainer>
+  <author email="rysszymon00@gmail.com">Szymon Ryś</author>
+  <maintainer email="rysszymon00@gmail.com">Szymon Ryś</maintainer>
   <license>Apache-2.0</license>
 
   <test_depend>ament_copyright</test_depend>
