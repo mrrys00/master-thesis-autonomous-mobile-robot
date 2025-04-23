@@ -13,14 +13,13 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='apprunner',
+    maintainer='szymon',
     maintainer_email='rysszymon00@gmail.com',
     description='TODO: Package description',
-    license='MIT',
+    license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            f'{package_name} = {package_name}.{package_name}:main'
         ],
     },
 )

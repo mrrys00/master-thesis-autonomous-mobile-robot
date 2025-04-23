@@ -2,11 +2,10 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>map_predictor</name>
-  <version>1.0.0</version>
-  <description>Map processor node</description>
-  <author email="rysszymon00@gmail.com">Szymon Ryś</author>
-  <maintainer email="rysszymon00@gmail.com">Szymon Ryś</maintainer>
-  <license>MIT License</license>
+  <version>0.0.1</version>
+  <description>Map predictor node</description>
+  <maintainer email="rysszymon00@gmail.com">szymon</maintainer>
+  <license>Apache-2.0</license>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
