@@ -104,8 +104,8 @@ remove_ros2_workspace:
 #	export TURTLEBOT3_MODEL=waffle && ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 # 	ros2 launch project_bringup pc_bringup.launch.py
 #	ros2 launch nav2_bringup rviz_launch.py
-#	ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file src/project_bringup/config/slam.yaml
-#	ros2 launch nav2_bringup navigation_launch.py params_file:="src/project_bringup/config/nav2_params.yaml"
+#	ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file src/project_bringup/config/simulation/slam.yaml (or robot)
+#	ros2 launch nav2_bringup navigation_launch.py params_file:="src/project_bringup/config/simulation/nav2_params.yaml" (or robot)
 #	ros2 run exploration_algorithm random_direction_node
 
 prepare_robot:
