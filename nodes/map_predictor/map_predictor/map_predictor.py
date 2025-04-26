@@ -2,6 +2,7 @@ import os
 import json
 from datetime import datetime
 
+from copy import deepcopy
 from json import load
 import os
 import numpy as np
@@ -20,7 +21,6 @@ VAL_FREE = 0
 VAL_OCCUPIED = 100
 
 # TODO - add description for every method
-# TODO - test that code
 
 class MapPredictorNode(Node):
     def __init__(self):
@@ -98,13 +98,13 @@ class MapPredictorNode(Node):
 
             self.get_logger().info(f"Saved map data to {filename}")
             
-            self.latest_map = msg
+            self.latest_map = deepcopy(msg)
 
         except Exception as e:
             self.get_logger().error(f"Failed to process and save map data: {e}")
 
     def process_latest_map(self):
-        if self.latest_map is not None:
+        try:
             self.get_logger().info("Processing the latest map data.")
             # TODO - measure processing time
             
@@ -126,10 +126,10 @@ class MapPredictorNode(Node):
             f"\tInaccessible: {inaccessible}\n" + \
             f"\tUnknown: {unknown}\n" + \
             f"\tExplored: {100*explored_percent:.8f}%")
-        else:
+        except:
             self.get_logger().warn("No map data available to process.")
             
-    def calculate_remaining_space(grid: np.ndarray[tuple[()], np.dtype]) -> tuple:
+    def calculate_remaining_space(self, grid: np.ndarray[tuple[()], np.dtype]) -> tuple:
         _explored_num = np.count_nonzero(grid==VAL_OCCUPIED) + np.count_nonzero(grid==VAL_FREE) + np.count_nonzero(grid==VAL_INACCESSIBLE)
         _height, _width = grid.shape
         # print(_width, _height, _width*_height, _explored_num)
@@ -142,7 +142,7 @@ class MapPredictorNode(Node):
             np.count_nonzero(VAL_UNKNOWN),\
             _explored_percent
 
-    def fill_enclosed_unknowns_v2(grid: np.ndarray) -> np.ndarray:
+    def fill_enclosed_unknowns_v2(self, grid: np.ndarray) -> np.ndarray:
         filled_grid = grid.copy()
         height, width = grid.shape
         
@@ -170,7 +170,7 @@ class MapPredictorNode(Node):
         
         return filled_grid
     
-    def is_fully_enclosed(grid: np.ndarray) -> bool:
+    def is_fully_enclosed(self, grid: np.ndarray) -> bool:
         height, width = grid.shape
         visited = np.zeros_like(grid, dtype=bool)
         queue = []
@@ -201,7 +201,7 @@ class MapPredictorNode(Node):
         # If any 0 is reachable from the boundary, it is not enclosed
         return not np.any((grid == VAL_FREE) & visited)
 
-    def fill_outside_with_100(grid: np.ndarray) -> np.ndarray:
+    def fill_outside_with_100(self, grid: np.ndarray) -> np.ndarray:
         filled_grid = grid.copy()
         height, width = grid.shape
         
