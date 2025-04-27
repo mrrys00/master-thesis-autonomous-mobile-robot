@@ -16,10 +16,15 @@ NODES = nodes/
 NODE_MIABOT = miabot_node/
 NODE_EXPLORATION = exploration_algorithm/
 NODE_PROJECT_BRINGUP = project_bringup/
+NODE_MAP_JSON = map_json_node/
+NODE_MAP_PEDICTOR = map_predictor/
+CONFIGS = configs/
 
 SRC = src/
 RESULTS = results/
 
+ROS_IMAGE_NAME = ros_ubuntu_v3
+ROS_DOCKER = ros_docker
 
 .SILENT: perpare_robot prepare_pc prepare_ros2_workspace test
 
@@ -76,7 +81,7 @@ prepare_frontier_base_exploration_algorithm:
 	cp -r temporary/autonomous_exploration/ $(ROS2_WORKSPACE)$(SRC)
 
 copy_nodes:
-	cp -r $(PROJECT_ROOT)$(NODES)$(NODE_PROJECT_BRINGUP) $(PROJECT_ROOT)$(NODES)$(NODE_MIABOT) $(PROJECT_ROOT)$(NODES)$(NODE_EXPLORATION) $(ROS2_WORKSPACE)$(SRC)
+	cp -r $(PROJECT_ROOT)$(NODES)$(NODE_PROJECT_BRINGUP) $(PROJECT_ROOT)$(NODES)$(NODE_MIABOT) $(PROJECT_ROOT)$(NODES)$(NODE_EXPLORATION) $(PROJECT_ROOT)$(NODES)$(NODE_MAP_JSON) $(PROJECT_ROOT)$(NODES)$(NODE_MAP_PEDICTOR) $(ROS2_WORKSPACE)$(SRC)
 
 build_ros2_workspace:
 	cd $(ROS2_WORKSPACE); \
@@ -96,10 +101,11 @@ remove_ros2_workspace:
 # run_pc_nodes:
 # 	cd $(ROS2_WORKSPACE)
 # 	source install/setup.bash
+#	export TURTLEBOT3_MODEL=waffle && ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 # 	ros2 launch project_bringup pc_bringup.launch.py
 #	ros2 launch nav2_bringup rviz_launch.py
-#	ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file src/project_bringup/config/slam.yaml
-#	ros2 launch nav2_bringup navigation_launch.py params_file:="src/project_bringup/config/nav2_params.yaml"
+#	ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file src/project_bringup/config/simulation/slam.yaml (or robot)
+#	ros2 launch nav2_bringup navigation_launch.py params_file:="src/project_bringup/config/simulation/nav2_params.yaml" (or robot)
 #	ros2 run exploration_algorithm random_direction_node
 
 prepare_robot:
