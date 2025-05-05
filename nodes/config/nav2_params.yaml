@@ -111,7 +111,7 @@ controller_server:
     # Progress checker parameters
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.03
+      required_movement_radius: 0.
       movement_time_allowance: 10.0
     # Goal checker parameters
     #precise_goal_checker:
@@ -179,7 +179,7 @@ local_costmap:
       width: 2
       height: 2
       resolution: 0.03
-      robot_radius: 0.07
+      robot_radius: 0.2
       plugins: ["range_layer", "obstacle_layer", "inflation_layer"]
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -225,7 +225,7 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       use_sim_time: False
-      robot_radius: 0.05
+      robot_radius: 0.2
       resolution: 0.03
       track_unknown_space: true
       plugins: ["range_layer", "static_layer", "obstacle_layer", "inflation_layer"]
