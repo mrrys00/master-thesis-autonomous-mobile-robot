@@ -15,11 +15,12 @@ setup(
     zip_safe=True,
     maintainer='szymon',
     maintainer_email='rysszymon00@gmail.com',
-    description='TODO: Package description',
+    description='Time predictor node',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            f'{package_name} = {package_name}.{package_name}:main'
         ],
     },
 )
