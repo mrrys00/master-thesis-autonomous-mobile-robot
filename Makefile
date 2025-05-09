@@ -116,7 +116,7 @@ before_ros_run_robot:
 	$(MAKE) add_serial_port_privilege
 
 prepare_pc:
-	# $(MAKE) install_ros2_humble
+	$(MAKE) install_ros2_humble
 	$(MAKE) install_ros2_nodes
 	$(MAKE) prepare_ros2_workspace
 
@@ -128,3 +128,20 @@ view_frames:
 save_map:
 	ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap "name: {data: '$(RESULTS)map_$$(date +%s)'}"
 	echo $$?
+
+# docker
+docker_build:
+	docker build -t $(ROS_IMAGE_NAME) .
+
+docker_run:
+	docker run -it -v $$(pwd):/workspace --name $(ROS_DOCKER) $(ROS_IMAGE_NAME)
+
+docker_run_2:
+	docker run -it -v $$(pwd):/workspace $(ROS_IMAGE_NAME) /bin/bash
+
+docker_stop:
+	docker stop $(ROS_DOCKER)
+	docker rm $(ROS_DOCKER)
+
+docker_remove:
+	docker image rm --force $(ROS_IMAGE_NAME)
