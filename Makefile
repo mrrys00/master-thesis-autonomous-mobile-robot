@@ -22,9 +22,12 @@ CONFIGS = configs/
 
 SRC = src/
 RESULTS = results/
+CACHE = cache/
 
 ROS_IMAGE_NAME = ros_ubuntu_v3
 ROS_DOCKER = ros_docker
+
+DOCKER_DEVELOPMENT = docker_development/
 
 .SILENT: perpare_robot prepare_pc prepare_ros2_workspace test
 
@@ -130,18 +133,10 @@ save_map:
 	echo $$?
 
 # docker
-docker_build:
-	docker build -t $(ROS_IMAGE_NAME) .
+docker_devcontainer:
+	mkdir -p $(ROS2_WORKSPACE)$(SRC) $(ROS2_WORKSPACE)/.devcontainer
+	mkdir -p $(ROS2_WORKSPACE)$(CACHE)$(ROS_DISTRO)/build $(ROS2_WORKSPACE)$(CACHE)$(ROS_DISTRO)/install $(ROS2_WORKSPACE)$(CACHE)$(ROS_DISTRO)/log
 
-docker_run:
-	docker run -it -v $$(pwd):/workspace --name $(ROS_DOCKER) $(ROS_IMAGE_NAME)
+	cp $(DOCKER_DEVELOPMENT)devcontainer.json $(DOCKER_DEVELOPMENT)Dockerfile $(ROS2_WORKSPACE).devcontainer/
 
-docker_run_2:
-	docker run -it -v $$(pwd):/workspace $(ROS_IMAGE_NAME) /bin/bash
-
-docker_stop:
-	docker stop $(ROS_DOCKER)
-	docker rm $(ROS_DOCKER)
-
-docker_remove:
-	docker image rm --force $(ROS_IMAGE_NAME)
+	$(MAKE) copy_nodes
