@@ -13,6 +13,7 @@ from scipy.ndimage import label
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import Odometry
 
 VAL_INACCESSIBLE = 200
 
@@ -42,12 +43,21 @@ class TimePredictorNode(Node):
             10
         )
         
+        # Subscribe to the /map topic
+        self.odom_subscription = self.create_subscription(
+            Odometry,
+            '/odom',
+            self.odom_callback,
+            10
+        )
+        
         # Create a timer to periodically process the latest map
         self.create_timer(10.0, self.process_latest_map)
         
         self.get_logger().info("Map Predictor Node has been started.")
         
-        self.latest_map: OccupancyGrid = None
+        self.latest_map: OccupancyGrid | dict = None
+        self.latest_odom: Odometry | dict = None
 
 
     def map_callback(self, msg: OccupancyGrid):
@@ -98,12 +108,20 @@ class TimePredictorNode(Node):
             with open(filename, 'w') as json_file:
                 json.dump(map_data, json_file, indent=4)
 
-            self.get_logger().info(f"Saved map data to {filename}")
+                self.get_logger().info(f"Saved map data to {filename}")
             
             self.latest_map = deepcopy(msg)
 
         except Exception as e:
             self.get_logger().error(f"Failed to process and save map data: {e}")
+
+    def odom_callback(self, msg: Odometry):
+        """_summary_
+
+        Args:
+            msg (Odometry): _description_
+        """
+        pass
 
     def process_latest_map(self):
         """
