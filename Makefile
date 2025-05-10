@@ -16,16 +16,15 @@ NODES = nodes/
 NODE_MIABOT = miabot_node/
 NODE_EXPLORATION = exploration_algorithm/
 NODE_PROJECT_BRINGUP = project_bringup/
+CONFIG = config/
+
 NODE_MAP_JSON = map_json_node/
 NODE_MAP_PEDICTOR = map_predictor/
-CONFIGS = configs/
+NODE_TIME_PREDICTOR = time_predictor/
 
 SRC = src/
 RESULTS = results/
 CACHE = cache/
-
-ROS_IMAGE_NAME = ros_ubuntu_v3
-ROS_DOCKER = ros_docker
 
 DOCKER_DEVELOPMENT = docker_development/
 
@@ -84,7 +83,7 @@ prepare_frontier_base_exploration_algorithm:
 	cp -r temporary/autonomous_exploration/ $(ROS2_WORKSPACE)$(SRC)
 
 copy_nodes:
-	cp -r $(PROJECT_ROOT)$(NODES)$(NODE_PROJECT_BRINGUP) $(PROJECT_ROOT)$(NODES)$(NODE_MIABOT) $(PROJECT_ROOT)$(NODES)$(NODE_EXPLORATION) $(PROJECT_ROOT)$(NODES)$(NODE_MAP_JSON) $(PROJECT_ROOT)$(NODES)$(NODE_MAP_PEDICTOR) $(ROS2_WORKSPACE)$(SRC)
+	cp -r $(PROJECT_ROOT)$(NODES)$(NODE_PROJECT_BRINGUP) $(PROJECT_ROOT)$(NODES)$(NODE_MIABOT) $(PROJECT_ROOT)$(NODES)$(NODE_EXPLORATION) $(PROJECT_ROOT)$(NODES)$(NODE_MAP_JSON) $(PROJECT_ROOT)$(NODES)$(NODE_MAP_PEDICTOR) $(PROJECT_ROOT)$(NODES)$(NODE_TIME_PREDICTOR) $(PROJECT_ROOT)$(NODES)$(CONFIG) $(ROS2_WORKSPACE)$(SRC)
 
 build_ros2_workspace:
 	cd $(ROS2_WORKSPACE); \
@@ -93,6 +92,14 @@ build_ros2_workspace:
 remove_ros2_workspace:
 	rm -rf $(ROS2_WORKSPACE)
 
+prepare_robot:
+	$(MAKE) install_ros2_humble
+	$(MAKE) prepare_ros2_workspace
+
+prepare_pc:
+	$(MAKE) install_ros2_humble
+	$(MAKE) install_ros2_nodes
+	$(MAKE) prepare_ros2_workspace
 
 # these steps manually :)
 
@@ -107,21 +114,10 @@ remove_ros2_workspace:
 #	export TURTLEBOT3_MODEL=waffle && ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 # 	ros2 launch project_bringup pc_bringup.launch.py
 #	ros2 launch nav2_bringup rviz_launch.py
-#	ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file src/project_bringup/config/simulation/slam.yaml (or robot)
-#	ros2 launch nav2_bringup navigation_launch.py params_file:="src/project_bringup/config/simulation/nav2_params.yaml" (or robot)
+#	ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file src/config/simulation/slam.yaml (or robot)
+#	ros2 launch nav2_bringup navigation_launch.py params_file:="src/config/simulation/nav2_params.yaml" (or robot)
 #	ros2 run exploration_algorithm random_direction_node
 
-prepare_robot:
-	# $(MAKE) install_ros2_humble
-	$(MAKE) prepare_ros2_workspace
-
-before_ros_run_robot:
-	$(MAKE) add_serial_port_privilege
-
-prepare_pc:
-	$(MAKE) install_ros2_humble
-	$(MAKE) install_ros2_nodes
-	$(MAKE) prepare_ros2_workspace
 
 # tools
 view_frames:
@@ -132,11 +128,33 @@ save_map:
 	ros2 service call /slam_toolbox/save_map slam_toolbox/srv/SaveMap "name: {data: '$(RESULTS)map_$$(date +%s)'}"
 	echo $$?
 
-# docker
+
+# docker - https://docs.ros.org/en/humble/How-To-Guides/Setup-ROS-2-with-VSCode-and-Docker-Container.html#id7
 docker_devcontainer:
 	mkdir -p $(ROS2_WORKSPACE)$(SRC) $(ROS2_WORKSPACE)/.devcontainer
 	mkdir -p $(ROS2_WORKSPACE)$(CACHE)$(ROS_DISTRO)/build $(ROS2_WORKSPACE)$(CACHE)$(ROS_DISTRO)/install $(ROS2_WORKSPACE)$(CACHE)$(ROS_DISTRO)/log
 
 	cp $(DOCKER_DEVELOPMENT)devcontainer.json $(DOCKER_DEVELOPMENT)Dockerfile $(ROS2_WORKSPACE).devcontainer/
 
-	$(MAKE) copy_nodes
+	cp Makefile $(ROS2_WORKSPACE)
+
+
+# node runners
+run_remainder:
+	echo "make sure to run source install/setup.bash before that"
+
+run_node_quick_simulation:
+	$(MAKE) run_remainder
+	export TURTLEBOT3_MODEL=waffle && ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py & \
+	ros2 launch project_bringup pc_bringup.launch.py & \
+	ros2 launch nav2_bringup rviz_launch.py & \
+	ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file src/config/simulation/slam.yaml & \
+	ros2 launch nav2_bringup navigation_launch.py params_file:="src/config/simulation/nav2_params.yaml"
+
+run_node_map_json_node:
+	$(MAKE) run_remainder
+	ros2 run map_json_node map_json_node
+
+run_node_map_predictor:
+	$(MAKE) run_remainder
+	ros2 run map_predictor map_predictor
