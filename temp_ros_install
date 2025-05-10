@@ -1,4 +1,0 @@
-source /opt/ros/humble/setup.bash
-export TURTLEBOT3_MODEL=waffle
-
-ROS2-FrontierBaseExplorationForAutonomousRobot
