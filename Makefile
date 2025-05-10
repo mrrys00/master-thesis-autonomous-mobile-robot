@@ -27,6 +27,7 @@ RESULTS = results/
 CACHE = cache/
 
 DOCKER_DEVELOPMENT = docker_development/
+VSCODE = .vscode/
 
 .SILENT: perpare_robot prepare_pc prepare_ros2_workspace test
 
@@ -130,6 +131,7 @@ save_map:
 
 
 # docker - https://docs.ros.org/en/humble/How-To-Guides/Setup-ROS-2-with-VSCode-and-Docker-Container.html#id7
+# indexing ROS2 in vs code - https://robotics.stackexchange.com/questions/113024/import-rclpy-could-not-be-resolved-pylance-reportmissingimports
 docker_devcontainer:
 	mkdir -p $(ROS2_WORKSPACE)$(SRC) $(ROS2_WORKSPACE)/.devcontainer
 	mkdir -p $(ROS2_WORKSPACE)$(CACHE)$(ROS_DISTRO)/build $(ROS2_WORKSPACE)$(CACHE)$(ROS_DISTRO)/install $(ROS2_WORKSPACE)$(CACHE)$(ROS_DISTRO)/log
@@ -137,6 +139,9 @@ docker_devcontainer:
 	cp $(DOCKER_DEVELOPMENT)devcontainer.json $(DOCKER_DEVELOPMENT)Dockerfile $(ROS2_WORKSPACE).devcontainer/
 
 	cp Makefile $(ROS2_WORKSPACE)
+
+	mkdir -p $(ROS2_WORKSPACE)$(VSCODE)
+	cp settings.json $(ROS2_WORKSPACE)$(VSCODE)
 
 
 # node runners
