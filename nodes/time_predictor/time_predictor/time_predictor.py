@@ -6,20 +6,30 @@ from copy import deepcopy
 from json import load
 import os
 import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.cluster import DBSCAN
-from scipy.ndimage import label
+# import matplotlib.pyplot as plt
+# from sklearn.cluster import DBSCAN
+# from scipy.ndimage import label
+from collections import deque
 
 import rclpy
+from rclpy.action import ActionClient
 from rclpy.node import Node
-from nav_msgs.msg import OccupancyGrid
-from nav_msgs.msg import Odometry
 
-VAL_INACCESSIBLE = 200
+from nav2_msgs.action import NavigateToPose
+from nav_msgs.msg import OccupancyGrid, Odometry
 
 VAL_UNKNOWN = -1
 VAL_FREE = 0
 VAL_OCCUPIED = 100
+VAL_INACCESSIBLE = 101
+
+VAL_CURR_POSITION = 200
+VAL_NEXT_GOAL = 201
+
+VAL_ESTIMATED_WALL = 250
+
+RESOLUTION = 0.05 # TODO read resolution from config file
+DEBUG = False # TODO read debug from config file
 
 # TODO - rewrite to explore and catch time to target
 
@@ -51,6 +61,9 @@ class TimePredictorNode(Node):
             10
         )
         
+        # Create navigation client
+        self.navigation_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
+        
         # Create a timer to periodically process the latest map
         self.create_timer(10.0, self.process_latest_map)
         
@@ -68,7 +81,13 @@ class TimePredictorNode(Node):
         Args:
             msg (OccupancyGrid): Currenty received map data.
         """
+        self.latest_map = deepcopy(msg)
+        
         try:
+            if not DEBUG:
+                # temporary not to save json files
+                raise Exception("DEBUG is not set to True.")
+
             map_data = {
                 'header': {
                     'stamp': {
@@ -110,8 +129,6 @@ class TimePredictorNode(Node):
 
                 self.get_logger().info(f"Saved map data to {filename}")
             
-            self.latest_map = deepcopy(msg)
-
         except Exception as e:
             self.get_logger().error(f"Failed to process and save map data: {e}")
 
@@ -121,7 +138,72 @@ class TimePredictorNode(Node):
         Args:
             msg (Odometry): _description_
         """
-        pass
+        
+        self.latest_odom = deepcopy(msg)
+    
+# ========== Map Processing Functions ==========
+
+    def get_reachable_mask(self,grid: np.ndarray, position: tuple[int, int]) -> np.ndarray[tuple[()], np.dtype]:
+        h, w = grid.shape
+        visited = np.zeros_like(grid, dtype=bool)
+        q = deque([position])
+        visited[position[1], position[0]] = True
+        
+        while q:
+            x, y = q.popleft()
+            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h:
+                    if not visited[ny, nx] and grid[ny, nx] in [0, -1]:
+                        visited[ny, nx] = True
+                        q.append((nx, ny))
+
+        return visited
+
+    def fill_outside_with_val_inaccessible(self, grid: np.ndarray, position: tuple[int, int]) -> np.ndarray[tuple[()], np.dtype]:
+        reachable = self.get_reachable_mask(grid, position)
+        grid[(grid == -1) & (~reachable)] = VAL_INACCESSIBLE
+        
+        return grid
+
+    def is_fully_enclosed(self, grid: np.ndarray, position: tuple[int, int]) -> bool:
+        reachable = self.get_reachable_mask(grid, position)
+        unknown_mask = (grid == -1)
+        
+        return not np.any(reachable & unknown_mask)
+
+    def fill_enclosed_unknowns_v2(self, grid: np.ndarray, position: tuple[int, int]) -> np.ndarray[tuple[()], np.dtype]:
+        reachable = self.get_reachable_mask(grid, position)
+        unknown = (grid == -1)
+        enclosed = unknown & (~reachable)
+        grid[enclosed] = VAL_INACCESSIBLE
+        
+        return grid
+
+    def fill_boundary_unknowns(self, grid: np.ndarray, position: tuple[int, int]) -> np.ndarray[tuple[()], np.dtype]:
+        reachable = self.get_reachable_mask(grid, position)
+        h, w = grid.shape
+        for y in range(h):
+            for x in range(w):
+                if grid[y, x] == -1 and reachable[y, x]:
+                    neighbors = [(x+dx, y+dy) for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]]
+                    if any(0 <= nx < w and 0 <= ny < h and grid[ny, nx] == 0 for nx, ny in neighbors):
+                        grid[y, x] = 0
+        
+        return grid
+
+    def fill_boundary_gaps(self, grid: np.ndarray, position: tuple[int, int]) -> np.ndarray[tuple[()], np.dtype]:
+        reachable = self.get_reachable_mask(grid, position)
+        h, w = grid.shape
+        for y in range(h):
+            for x in range(w):
+                if grid[y, x] == -1 and reachable[y, x]:
+                    neighbors = [(x+dx, y+dy) for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]]
+                    free_neighbors = [grid[ny, nx] == 0 for nx, ny in neighbors if 0 <= nx < w and 0 <= ny < h]
+                    if sum(free_neighbors) >= 2:
+                        grid[y, x] = 0
+        
+        return grid
 
     def process_latest_map(self):
         """
@@ -129,7 +211,6 @@ class TimePredictorNode(Node):
         """
         try:
             self.get_logger().info("Processing the latest map data.")
-            # TODO - measure processing time
             
             _data, _height, _width = self.latest_map.data, self.latest_map.info.height, self.latest_map.info.width
             _grid = np.array(_data).reshape((_height, _width))
@@ -163,7 +244,7 @@ class TimePredictorNode(Node):
         The grid is a 2D numpy array where each cell can have one of the following values:
             - VAL_OCCUPIED (100): The cell is occupied.
             - VAL_FREE (0): The cell is free.
-            - VAL_INACCESSIBLE (200): The cell is inaccessible.
+            - VAL_INACCESSIBLE (101): The cell is inaccessible.
             - VAL_UNKNOWN (-1): The cell is unknown.
         The grid is represented as a numpy array of shape (height, width).
 
@@ -180,132 +261,114 @@ class TimePredictorNode(Node):
             np.count_nonzero(VAL_UNKNOWN),\
             _explored_percent
 
-    def fill_enclosed_unknowns_v2(self, grid: np.ndarray) -> np.ndarray:
-        """
-        Fill enclosed unknown regions in the grid with VAL_INACCESSIBLE.
-        This function uses connected components to identify regions of unknown cells (-1) and fills them with VAL_INACCESSIBLE (200)
-        if they are not connected to any free cells (0) or touch the boundary of the grid.
+# ========== Exploration Functions ==========
+
+    def get_position(self, x: float, y: float, origin_x: float = 0.0, origin_y: float = 0.0) -> tuple[int, int]:
+        """Get position in pixels from real-world coordinates.
 
         Args:
-            grid (np.ndarray): The occupancy grid of the map.
+            x (float), y (float): Real-world coordinates to mark.
+            origin_x (float, optional), origin_y (float, optional): Real-world coordinates of the map's origin (bottom-left corner). Defaults to 0.0.
 
         Returns:
-            np.ndarray: The modified grid with enclosed unknown regions filled with VAL_INACCESSIBLE.
+            tuple: position x and y in pixels
         """
-        filled_grid = grid.copy()
-        height, width = grid.shape
         
-        # Identify all -1 regions using connected components
-        labeled_grid, num_features = label(grid == -1)
-        
-        # Find which regions are connected to 1 or touch the boundary
-        invalid_regions = set()
-        for i in range(height):
-            for j in range(width):
-                if labeled_grid[i, j] > 0:
-                    # If the region is adjacent to 1, mark it as invalid
-                    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                        nx, ny = i + dx, j + dy
-                        if 0 <= nx < height and 0 <= ny < width and grid[nx, ny] == VAL_FREE:
-                            invalid_regions.add(labeled_grid[i, j])
-                    # If the region touches the boundary, also mark it as invalid
-                    if i == 0 or i == height - 1 or j == 0 or j == width - 1:
-                        invalid_regions.add(labeled_grid[i, j])
-        
-        # Convert enclosed unknown regions (only surrounded by VAL_OCCUPIED) to VAL_INACCESSIBLE
-        for region_id in range(1, num_features + 1):
-            if region_id not in invalid_regions:
-                filled_grid[labeled_grid == region_id] = VAL_INACCESSIBLE
-        
-        return filled_grid
-    
-    def is_fully_enclosed(self, grid: np.ndarray) -> bool:
+        return int((x - origin_x) / RESOLUTION), int((y - origin_y) / RESOLUTION)
+
+    # def mark_position_v2(
+    #     self, 
+    #     grid: np.ndarray,
+    #     x: int,
+    #     y: int,
+    #     color: int = VAL_CURR_POSITION
+    #     ) -> np.ndarray:
+    #     """
+    #     Marks a position on the grid based on real-world coordinates and map origin.
+
+    #     Args:
+    #         grid: 2D numpy array representing the map.
+    #         x, y: grid coordinates.
+
+    #     Returns:
+    #         Modified grid with the position marked.
+    #     """
+    #     height, width = grid.shape
+
+    #     print(f"Marking position at world coordinates: ({x}, {y})")
+
+    #     if 0 <= x < width and 0 <= y < height:
+    #         grid[y, x] = color
+    #     else:
+    #         print("Warning: Position out of grid bounds.")
+
+    #     return grid
+
+    def explore_nearest_unknown(
+        self,
+        grid: np.ndarray,
+        x: float,
+        y: float,
+        origin_x: float = 0.0,
+        origin_y: float = 0.0,
+        resolution: float = 1.0
+    ) -> tuple[float | None, float | None, int | None, int | None]:
         """
-        Check if the grid is fully enclosed by VAL_OCCUPIED cells.
-        This function uses a flood fill algorithm to check if there are any free cells (0) that are reachable from the boundary of the grid.
-        If any free cell is reachable from the boundary, the grid is not fully enclosed.
-        Otherwise, it is fully enclosed.
+        Navigate to the nearest unknown (-1) cell.
 
-        Args:
-            grid (np.ndarray): The occupancy grid of the map.
-
-        Returns:
-            bool: True if the grid is fully enclosed, False otherwise.
-        """
-        height, width = grid.shape
-        visited = np.zeros_like(grid, dtype=bool)
-        queue = []
-        
-        # Start flood fill from the borders where 0 or -1 exists
-        for i in range(height):
-            if grid[i, 0] in (0, -1):
-                queue.append((i, 0))
-            if grid[i, width - 1] in (0, -1):
-                queue.append((i, width - 1))
-        for j in range(width):
-            if grid[0, j] in (0, -1):
-                queue.append((0, j))
-            if grid[height - 1, j] in (0, -1):
-                queue.append((height - 1, j))
-        
-        while queue:
-            x, y = queue.pop()
-            if visited[x, y] or grid[x, y] == VAL_OCCUPIED:
-                continue
-            visited[x, y] = True
-            
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < height and 0 <= ny < width and not visited[nx, ny] and grid[nx, ny] in (0, -1):
-                    queue.append((nx, ny))
-        
-        # If any 0 is reachable from the boundary, it is not enclosed
-        return not np.any((grid == VAL_FREE) & visited)
-
-    def fill_outside_with_val_inaccessible(self, grid: np.ndarray) -> np.ndarray:
-        """
-        Fill the outside of the grid with VAL_INACCESSIBLE (200).
-        This function uses a flood fill algorithm to identify all external areas of the grid that are not occupied (VAL_OCCUPIED).
-
-        Args:
-            grid (np.ndarray): The occupancy grid of the map.
+        Parameters:
+            grid (np.ndarray): Occupancy grid (2D)
+            x (float): Robot real-world x position
+            y (float): Robot real-world y position
+            origin_x (float): Map origin x in real-world coordinates
+            origin_y (float): Map origin y in real-world coordinates
+            resolution (float): Map resolution (m/cell)
 
         Returns:
-            np.ndarray: The modified grid with external areas filled with VAL_INACCESSIBLE.
+            Tuple of real-world coordinates (x, y) and grid coordinates (x, y) or None if no unknowns found
         """
-        filled_grid = grid.copy()
         height, width = grid.shape
-        
-        # Identify all external areas using flood fill from edges
-        visited = np.zeros_like(grid, dtype=bool)
-        queue = []
-        
-        for i in range(height):
-            if grid[i, 0] != VAL_OCCUPIED:
-                queue.append((i, 0))
-            if grid[i, width - 1] != VAL_OCCUPIED:
-                queue.append((i, width - 1))
-        for j in range(width):
-            if grid[0, j] != VAL_OCCUPIED:
-                queue.append((0, j))
-            if grid[height - 1, j] != VAL_OCCUPIED:
-                queue.append((height - 1, j))
-        
-        while queue:
-            x, y = queue.pop()
-            if visited[x, y] or grid[x, y] == VAL_OCCUPIED:
-                continue
-            visited[x, y] = True
-            
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < height and 0 <= ny < width and not visited[nx, ny] and grid[nx, ny] != VAL_OCCUPIED:
-                    queue.append((nx, ny))
-        
-        # Any non-VAL_OCCUPIED space that is not visited is fully enclosed, so fill the outside with VAL_OCCUPIED
-        filled_grid[visited] = VAL_INACCESSIBLE
-        
-        return filled_grid
+
+        # Convert real-world position to grid indices
+        grid_x = int((x - origin_x) / resolution)
+        grid_y = int((y - origin_y) / resolution)
+
+        # Validate bounds
+        if not (0 <= grid_x < width and 0 <= grid_y < height):
+            raise ValueError("Robot position is out of map bounds")
+
+        # Find all unknown cells
+        unknown_indices = np.argwhere(grid == -1)
+        if unknown_indices.size == 0:
+            return None, None, None, None
+
+        # Compute distances
+        distances = np.linalg.norm(unknown_indices - np.array([grid_y, grid_x]), axis=1)
+        nearest_idx = unknown_indices[np.argmin(distances)]
+
+        # Convert grid indices back to real-world coordinates
+        target_real_x = origin_x + nearest_idx[1] * resolution + resolution / 2
+        target_real_y = origin_y + nearest_idx[0] * resolution + resolution / 2
+
+        return (target_real_x, target_real_y, nearest_idx[1], nearest_idx[0])
+
+    def method_to_process_and_catch_goal(self, goal_x: float, goal_y: float) -> tuple[float | None, float | None]:
+        """
+        Process and catch goal position
+        """
+        # TODO - write this function
+
+    def send_navigation_goal(self, goal_pose):
+        """
+        Send navigation goal
+        """
+        self.get_logger().info(f'Sending navigation goal as xyzw: ({goal_pose.pose.position.x}, {goal_pose.pose.position.y}, {goal_pose.pose.orientation.z}, {goal_pose.pose.orientation.w})')
+
+        # prepare goal
+        goal_msg = NavigateToPose.Goal()
+        goal_msg.pose = goal_pose
+
+        self.navigation_client.send_goal_async(goal_msg)
 
 def main(args=None):
     rclpy.init(args=args)
