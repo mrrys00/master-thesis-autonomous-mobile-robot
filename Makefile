@@ -89,9 +89,10 @@ ros2_prepare_urg2_node:
 	rosdep install -i --from-paths urg_node2
 
 ros2_prepare_frontier_base_exploration_algorithm:
-	mkdir temporary/; \
+	mkdir -p temporary/; \
 	git clone --recursive https://github.com/abdulkadrtr/ROS2-FrontierBaseExplorationForAutonomousRobot.git temporary/; \
 	cp -r temporary/autonomous_exploration/ $(ROS2_WORKSPACE)$(SRC)
+	rm -rf temporary/
 
 ros2_copy_nodes:
 	cp -r $(PROJECT_ROOT)$(NODES)$(NODE_PROJECT_BRINGUP) $(PROJECT_ROOT)$(NODES)$(NODE_MIABOT) $(PROJECT_ROOT)$(NODES)$(NODE_EXPLORATION) $(PROJECT_ROOT)$(NODES)$(NODE_MAP_JSON) $(PROJECT_ROOT)$(NODES)$(NODE_MAP_PEDICTOR) $(PROJECT_ROOT)$(NODES)$(NODE_TIME_PREDICTOR) $(PROJECT_ROOT)$(NODES)$(CONFIG) $(ROS2_WORKSPACE)$(SRC)
@@ -156,6 +157,8 @@ docker_init_devcontainer:
 	$(MAKE) ros2_copy_nodes
 	cp $(REQUIREMENTS) $(ROS2_WORKSPACE)
 
+	@echo "Remember to source source /opt/ros/$(ROS_DISTRO)/setup.bash before running docker setup"
+
 docker_setup_devcontainer:
 	@if [ "$(ROS2_WORKSPACE)" = "$(PROJECT_ROOT)" ]; then \
 		echo "ROS2_WORKSPACE is equal to PROJECT_ROOT. Check passed"; \
@@ -172,11 +175,11 @@ docker_setup_devcontainer:
 	$(MAKE) ros2_build_workspace
 
 # node runners
-run_remainder:
+run_reminder:
 	@echo "make sure to run source install/setup.bash before that"
 
 run_node_quick_simulation:
-	$(MAKE) run_remainder
+	$(MAKE) run_reminder
 	export TURTLEBOT3_MODEL=waffle && ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py & \
 	ros2 launch project_bringup pc_bringup.launch.py & \
 	ros2 launch nav2_bringup rviz_launch.py & \
@@ -184,9 +187,9 @@ run_node_quick_simulation:
 	ros2 launch nav2_bringup navigation_launch.py params_file:="src/config/simulation/nav2_params.yaml"
 
 run_node_map_json_node:
-	$(MAKE) run_remainder
+	$(MAKE) run_reminder
 	ros2 run map_json_node map_json_node
 
 run_node_map_predictor:
-	$(MAKE) run_remainder
+	$(MAKE) run_reminder
 	ros2 run map_predictor map_predictor
