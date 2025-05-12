@@ -79,9 +79,13 @@ ros2_prepare_workspace:
 	$(MAKE) ros2_copy_nodes
 	$(MAKE) ros2_build_workspace
 
-ros2_prepare_urg2_node:
+ros2_download_urg2_node:
 	cd $(ROS2_WORKSPACE)$(SRC); \
-	git clone --recursive https://github.com/Hokuyo-aut/urg_node2.git; \
+	git clone --recursive https://github.com/Hokuyo-aut/urg_node2.git
+
+ros2_prepare_urg2_node:
+	$(MAKE) ros2_download_urg2_node
+	cd $(ROS2_WORKSPACE)$(SRC); \
 	@echo $(SUDO_PASSWORD) | sudo -S rosdep init; \
 	cat ../../nodes/config/urg_node2.launch.py > urg_node2/launch/urg_node2.launch.py; \
 	cat ../../nodes/config/params_serial.yaml > urg_node2/config/params_serial.yaml; \
@@ -155,6 +159,7 @@ docker_init_devcontainer:
 	cp $(DOCKER_DEVELOPMENT)settings.json $(ROS2_WORKSPACE)$(VSCODE)
 
 	$(MAKE) ros2_copy_nodes
+	$(MAKE) ros2_download_urg2_node
 	cp $(REQUIREMENTS) $(ROS2_WORKSPACE)
 
 	@echo "Remember to source source /opt/ros/$(ROS_DISTRO)/setup.bash before running docker setup"
