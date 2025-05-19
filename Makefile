@@ -181,12 +181,12 @@ docker_setup_devcontainer:
 
 # node runners
 run_reminder:
+	@echo source /opt/ros/$(ROS_DISTRO)/setup.bash
 	@echo "make sure to run source install/setup.bash before that"
 
 run_node_quick_simulation:
 	$(MAKE) run_reminder
 	export TURTLEBOT3_MODEL=waffle && ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py & \
-	ros2 launch project_bringup pc_bringup.launch.py & \
 	ros2 launch nav2_bringup rviz_launch.py & \
 	ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file src/config/simulation/slam.yaml & \
 	ros2 launch nav2_bringup navigation_launch.py params_file:="src/config/simulation/nav2_params.yaml"

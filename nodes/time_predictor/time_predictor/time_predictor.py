@@ -6,6 +6,7 @@ from copy import deepcopy
 from json import load
 import os
 import numpy as np
+from math import sin, cos, pi
 # import matplotlib.pyplot as plt
 # from sklearn.cluster import DBSCAN
 # from scipy.ndimage import label
@@ -17,6 +18,9 @@ from rclpy.node import Node
 
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Odometry
+from geometry_msgs.msg import PoseStamped, TransformStamped
+from std_msgs.msg import Header
+
 
 VAL_UNKNOWN = -1
 VAL_FREE = 0
@@ -66,6 +70,8 @@ class TimePredictorNode(Node):
         
         # Create a timer to periodically process the latest map
         self.create_timer(10.0, self.process_latest_map)
+        
+        self.create_timer(10.0, self.explore_to_nearest_unknows)
         
         self.get_logger().info("Map Predictor Node has been started.")
         
@@ -133,10 +139,12 @@ class TimePredictorNode(Node):
             self.get_logger().error(f"Failed to process and save map data: {e}")
 
     def odom_callback(self, msg: Odometry):
-        """_summary_
-
+        """
+        Callback function for handling Odometry messages.
+        This function is triggered whenever a new Odometry message is received.
+        It creates a deep copy of the message and stores it in the `latest_odom` attribute.
         Args:
-            msg (Odometry): _description_
+            msg (Odometry): The incoming Odometry message.
         """
         
         self.latest_odom = deepcopy(msg)
@@ -144,6 +152,21 @@ class TimePredictorNode(Node):
 # ========== Map Processing Functions ==========
 
     def get_reachable_mask(self,grid: np.ndarray, position: tuple[int, int]) -> np.ndarray[tuple[()], np.dtype]:
+        """
+        Computes a mask of reachable cells in a grid starting from a given position.
+        This function performs a breadth-first search (BFS) to determine which cells 
+        in the grid can be reached from the starting position. A cell is considered 
+        reachable if it contains a value of 0 or -1.
+        Args:
+            grid (np.ndarray): A 2D numpy array representing the grid. Each cell 
+                contains an integer value.
+            position (tuple[int, int]): A tuple (x, y) representing the starting 
+                position in the grid. `x` is the column index, and `y` is the row index.
+        Returns:
+            np.ndarray: A 2D boolean numpy array of the same shape as `grid`, where 
+                `True` indicates that the corresponding cell is reachable, and 
+                `False` indicates that it is not.
+        """
         h, w = grid.shape
         visited = np.zeros_like(grid, dtype=bool)
         q = deque([position])
@@ -161,18 +184,53 @@ class TimePredictorNode(Node):
         return visited
 
     def fill_outside_with_val_inaccessible(self, grid: np.ndarray, position: tuple[int, int]) -> np.ndarray[tuple[()], np.dtype]:
+        """
+        Modifies the input grid by filling cells that are inaccessible and have a value of -1 
+        with a predefined constant value `VAL_INACCESSIBLE`.
+        Args:
+            grid (np.ndarray): A 2D numpy array representing the grid.
+            position (tuple[int, int]): A tuple representing the starting position 
+                (row, column) in the grid.
+        Returns:
+            np.ndarray: The modified grid with inaccessible cells updated.
+        """
         reachable = self.get_reachable_mask(grid, position)
         grid[(grid == -1) & (~reachable)] = VAL_INACCESSIBLE
         
         return grid
 
     def is_fully_enclosed(self, grid: np.ndarray, position: tuple[int, int]) -> bool:
+        """
+        Determines if a given position in a grid is fully enclosed.
+        A position is considered fully enclosed if there are no unknown cells 
+        (cells with a value of -1) that are reachable from the given position.
+        Args:
+            grid (np.ndarray): A 2D numpy array representing the grid. 
+                               Cells with a value of -1 are considered unknown.
+            position (tuple[int, int]): The (row, column) coordinates of the position to check.
+        Returns:
+            bool: True if the position is fully enclosed, False otherwise.
+        """
         reachable = self.get_reachable_mask(grid, position)
         unknown_mask = (grid == -1)
         
         return not np.any(reachable & unknown_mask)
 
     def fill_enclosed_unknowns_v2(self, grid: np.ndarray, position: tuple[int, int]) -> np.ndarray[tuple[()], np.dtype]:
+        """
+        Fills enclosed unknown cells in a grid with a specific value.
+        This method identifies cells in the grid that are marked as unknown (value -1) 
+        and are not reachable from a given starting position. These enclosed unknown 
+        cells are then updated with the value `VAL_INACCESSIBLE`.
+        Args:
+            grid (np.ndarray): A 2D numpy array representing the grid. Unknown cells 
+                are represented by the value -1.
+            position (tuple[int, int]): A tuple representing the starting position 
+                (row, column) in the grid.
+        Returns:
+            np.ndarray: The updated grid with enclosed unknown cells filled with 
+            `VAL_INACCESSIBLE`.
+        """
         reachable = self.get_reachable_mask(grid, position)
         unknown = (grid == -1)
         enclosed = unknown & (~reachable)
@@ -181,6 +239,22 @@ class TimePredictorNode(Node):
         return grid
 
     def fill_boundary_unknowns(self, grid: np.ndarray, position: tuple[int, int]) -> np.ndarray[tuple[()], np.dtype]:
+        """
+        Fills the boundary cells of a grid that are marked as unknown (-1) with 0 if they are reachable
+        and adjacent to a cell with a value of 0.
+        Args:
+            grid (np.ndarray): A 2D numpy array representing the grid, where -1 indicates unknown cells,
+                               0 indicates empty cells, and other values represent obstacles or other states.
+            position (tuple[int, int]): The starting position (x, y) in the grid from which reachability is determined.
+        Returns:
+            np.ndarray: The updated grid with boundary unknown cells filled with 0 where applicable.
+        Notes:
+            - The method uses the `get_reachable_mask` function to determine which cells are reachable
+              from the given position.
+            - A cell is considered a boundary unknown if it is marked as -1 and is adjacent to at least
+              one cell with a value of 0.
+            - The grid is updated in-place and also returned for convenience.
+        """
         reachable = self.get_reachable_mask(grid, position)
         h, w = grid.shape
         for y in range(h):
@@ -193,6 +267,19 @@ class TimePredictorNode(Node):
         return grid
 
     def fill_boundary_gaps(self, grid: np.ndarray, position: tuple[int, int]) -> np.ndarray[tuple[()], np.dtype]:
+        """
+        Fills gaps in the grid boundary by marking certain unreachable cells as free (value 0) 
+        if they are adjacent to at least two free cells and are reachable from the given position.
+        Args:
+            grid (np.ndarray): A 2D numpy array representing the grid, where:
+                -1 indicates an unreachable cell,
+                 0 indicates a free cell,
+                 other values may represent obstacles or other states.
+            position (tuple[int, int]): The starting position (x, y) in the grid from which 
+                reachability is determined.
+        Returns:
+            np.ndarray: The updated grid with certain boundary gaps filled.
+        """
         reachable = self.get_reachable_mask(grid, position)
         h, w = grid.shape
         for y in range(h):
@@ -276,33 +363,6 @@ class TimePredictorNode(Node):
         
         return int((x - origin_x) / RESOLUTION), int((y - origin_y) / RESOLUTION)
 
-    # def mark_position_v2(
-    #     self, 
-    #     grid: np.ndarray,
-    #     x: int,
-    #     y: int,
-    #     color: int = VAL_CURR_POSITION
-    #     ) -> np.ndarray:
-    #     """
-    #     Marks a position on the grid based on real-world coordinates and map origin.
-
-    #     Args:
-    #         grid: 2D numpy array representing the map.
-    #         x, y: grid coordinates.
-
-    #     Returns:
-    #         Modified grid with the position marked.
-    #     """
-    #     height, width = grid.shape
-
-    #     print(f"Marking position at world coordinates: ({x}, {y})")
-
-    #     if 0 <= x < width and 0 <= y < height:
-    #         grid[y, x] = color
-    #     else:
-    #         print("Warning: Position out of grid bounds.")
-
-    #     return grid
 
     def explore_nearest_unknown(
         self,
@@ -350,13 +410,50 @@ class TimePredictorNode(Node):
         target_real_x = origin_x + nearest_idx[1] * resolution + resolution / 2
         target_real_y = origin_y + nearest_idx[0] * resolution + resolution / 2
 
+        self.get_logger().info(f'New goal set to: ({target_real_x}, {target_real_y})')
+
         return (target_real_x, target_real_y, nearest_idx[1], nearest_idx[0])
 
-    def method_to_process_and_catch_goal(self, goal_x: float, goal_y: float) -> tuple[float | None, float | None]:
+    def explore_to_nearest_unknows(self):
         """
         Process and catch goal position
         """
-        # TODO - write this function
+        # TODO
+        
+        goal_x, goal_y, _, _ = self.explore_nearest_unknown(
+            np.array(self.latest_map.data).reshape((self.latest_map.info.height, self.latest_map.info.width)),
+            self.latest_odom.pose.pose.position.x,
+            self.latest_odom.pose.pose.position.y,
+            self.latest_map.info.origin.position.x,
+            self.latest_map.info.origin.position.y,
+            RESOLUTION
+        )
+        
+        new_cords = self.prepare_pose_stamped(
+            goal_x, goal_y,
+            self.latest_odom.pose.pose.orientation.z,
+            self.latest_odom.pose.pose.orientation.w)
+        
+        self.send_navigation_goal(new_cords)
+        
+    def prepare_pose_stamped(self, _x: float, _y: float, _ori_z: float, _ori_w: float) -> PoseStamped:
+        """
+        Prepare PoseStamped message structure from distance and actual position
+        """
+
+        goal_pose = PoseStamped()
+        goal_pose.header = Header()
+        goal_pose.header.frame_id = 'map'
+        goal_pose.header.stamp = self.get_clock().now().to_msg()
+        
+        goal_pose.pose.position.x = _x
+        goal_pose.pose.position.y = _y
+        # goal_pose.pose.orientation.z = sin(_theta / 2.0)
+        # goal_pose.pose.orientation.w = cos(_theta / 2.0)
+        goal_pose.pose.orientation.z = _ori_z
+        goal_pose.pose.orientation.w = _ori_w
+        
+        return goal_pose
 
     def send_navigation_goal(self, goal_pose):
         """
