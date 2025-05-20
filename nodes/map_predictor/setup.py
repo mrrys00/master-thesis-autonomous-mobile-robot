@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer='Szymon Ryś',
     maintainer_email='rysszymon00@gmail.com',
-    description='TODO: Package description',
+    description='Map predictor node',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
