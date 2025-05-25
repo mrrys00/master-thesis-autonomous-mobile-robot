@@ -71,7 +71,7 @@ class TimePredictorNode(Node):
         # Create a timer to periodically process the latest map
         self.create_timer(10.0, self.process_latest_map)
         
-        self.create_timer(10.0, self.explore_to_nearest_unknows)
+        self.create_timer(10.0, self.explore_by_frontiers)
         
         self.get_logger().info("Map Predictor Node has been started.")
         
@@ -364,17 +364,17 @@ class TimePredictorNode(Node):
         return int((x - origin_x) / RESOLUTION), int((y - origin_y) / RESOLUTION)
 
 
-    def explore_nearest_unknown(
+    def explore_nearest_frontier(
         self,
         grid: np.ndarray,
         x: float,
         y: float,
         origin_x: float = 0.0,
         origin_y: float = 0.0,
-        resolution: float = 1.0
+        resolution: float = RESOLUTION
     ) -> tuple[float | None, float | None, int | None, int | None]:
         """
-        Navigate to the nearest unknown (-1) cell.
+        Navigate to the most promising unknown cell to escape enclosure.
 
         Parameters:
             grid (np.ndarray): Occupancy grid (2D)
@@ -389,38 +389,50 @@ class TimePredictorNode(Node):
         """
         height, width = grid.shape
 
-        # Convert real-world position to grid indices
-        grid_x = int((x - origin_x) / resolution)
-        grid_y = int((y - origin_y) / resolution)
+        # Convert world position to grid coordinates
+        start_x = int((x - origin_x) / resolution)
+        start_y = int((y - origin_y) / resolution)
 
-        # Validate bounds
-        if not (0 <= grid_x < width and 0 <= grid_y < height):
-            raise ValueError("Robot position is out of map bounds")
-
-        # Find all unknown cells
-        unknown_indices = np.argwhere(grid == -1)
-        if unknown_indices.size == 0:
+        if not (0 <= start_x < width and 0 <= start_y < height):
+            self.get_logger().warn("Robot start position is out of bounds.")
             return None, None, None, None
 
-        # Compute distances
-        distances = np.linalg.norm(unknown_indices - np.array([grid_y, grid_x]), axis=1)
-        nearest_idx = unknown_indices[np.argmin(distances)]
+        visited = np.zeros_like(grid, dtype=bool)
+        queue = deque([(start_x, start_y)])
+        visited[start_y, start_x] = True
 
-        # Convert grid indices back to real-world coordinates
-        target_real_x = origin_x + nearest_idx[1] * resolution + resolution / 2
-        target_real_y = origin_y + nearest_idx[0] * resolution + resolution / 2
+        while queue:
+            cx, cy = queue.popleft()
 
-        self.get_logger().info(f'New goal set to: ({target_real_x}, {target_real_y})')
+            # If current free cell is adjacent to unknown, return it
+            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    if grid[ny, nx] == VAL_UNKNOWN:
+                        # This cell (cx, cy) is on the boundary of free and unknown
+                        real_x = origin_x + cx * resolution + resolution / 2
+                        real_y = origin_y + cy * resolution + resolution / 2
+                        self.get_logger().info(f"Targeting frontier cell at: ({cx}, {cy})")
+                        return real_x, real_y, cx, cy
 
-        return (target_real_x, target_real_y, nearest_idx[1], nearest_idx[0])
+            # Continue BFS
+            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    if not visited[ny, nx] and grid[ny, nx] == VAL_FREE:
+                        visited[ny, nx] = True
+                        queue.append((nx, ny))
 
-    def explore_to_nearest_unknows(self):
+        self.get_logger().info("No reachable unknown boundaries found.")
+        return None, None, None, None
+
+    def explore_by_frontiers(self):
         """
         Process and catch goal position
         """
         # TODO
         
-        goal_x, goal_y, _, _ = self.explore_nearest_unknown(
+        goal_x, goal_y, _, _ = self.explore_nearest_frontier(
             np.array(self.latest_map.data).reshape((self.latest_map.info.height, self.latest_map.info.width)),
             self.latest_odom.pose.pose.position.x,
             self.latest_odom.pose.pose.position.y,
