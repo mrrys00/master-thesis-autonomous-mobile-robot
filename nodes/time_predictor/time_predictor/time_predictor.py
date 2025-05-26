@@ -8,7 +8,7 @@ import os
 import numpy as np
 from math import sin, cos, pi
 # import matplotlib.pyplot as plt
-# from sklearn.cluster import DBSCAN
+from sklearn.cluster import DBSCAN
 # from scipy.ndimage import label
 from collections import deque
 
@@ -425,6 +425,178 @@ class TimePredictorNode(Node):
 
         self.get_logger().info("No reachable unknown boundaries found.")
         return None, None, None, None
+    
+
+    def explore_nearest_frontier_v2(
+        self,
+        grid: np.ndarray,
+        x: float,
+        y: float,
+        origin_x: float = 0.0,
+        origin_y: float = 0.0,
+        resolution: float = RESOLUTION
+    ) -> tuple[float | None, float | None, int | None, int | None]:
+        """
+        Find the most valuable frontier cell based on:
+        1. Largest frontier (connected wall cells adjacent to unknowns)
+        2. Highest surrounding unknown density
+
+        Returns:
+            real_x, real_y, grid_x, grid_y — best cell to navigate to
+        """
+        height, width = grid.shape
+        grid_x = int((x - origin_x) / resolution)
+        grid_y = int((y - origin_y) / resolution)
+
+        if not (0 <= grid_x < width and 0 <= grid_y < height):
+            self.get_logger().warn("Robot start position is out of bounds.")
+            return None, None, None, None
+
+        visited = np.zeros_like(grid, dtype=bool)
+        frontier_groups = []
+
+        def is_frontier(x, y):
+            if grid[y, x] != VAL_OCCUPIED:
+                return False
+            for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < width and 0 <= ny < height and grid[ny, nx] == VAL_UNKNOWN:
+                    return True
+            return False
+
+        # 1. Identify all frontier groups
+        for y in range(height):
+            for x in range(width):
+                if is_frontier(x, y) and not visited[y, x]:
+                    group = []
+                    q = deque([(x, y)])
+                    visited[y, x] = True
+                    while q:
+                        cx, cy = q.popleft()
+                        group.append((cx, cy))
+                        for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                            nx, ny = cx + dx, cy + dy
+                            if (0 <= nx < width and 0 <= ny < height and
+                                not visited[ny, nx] and is_frontier(nx, ny)):
+                                visited[ny, nx] = True
+                                q.append((nx, ny))
+                    if group:
+                        frontier_groups.append(group)
+
+        if not frontier_groups:
+            self.get_logger().info("No frontier groups found.")
+            return None, None, None, None
+
+        # 2. Evaluate each group
+        best_score = -float("inf")
+        best_point = None
+        for group in frontier_groups:
+            group_size = len(group)
+            unknown_score = 0
+            group_center = group[0]
+
+            for gx, gy in group:
+                for dx in range(-2, 3):
+                    for dy in range(-2, 3):
+                        nx, ny = gx + dx, gy + dy
+                        if 0 <= nx < width and 0 <= ny < height and grid[ny, nx] == VAL_UNKNOWN:
+                            unknown_score += 1
+
+            # Prefer large wall frontiers, then high unknown density
+            score = group_size * 10 + unknown_score
+
+            if score > best_score:
+                best_score = score
+                best_point = group_center
+
+        if best_point:
+            real_x = origin_x + best_point[0] * resolution + resolution / 2
+            real_y = origin_y + best_point[1] * resolution + resolution / 2
+            self.get_logger().info(f"Selected frontier at ({best_point[0]}, {best_point[1]}) with score {best_score}")
+            return real_x, real_y, best_point[0], best_point[1]
+
+        return None, None, None, None
+
+    def explore_wall_follow_ccw(
+        self,
+        grid: np.ndarray,
+        x: float,
+        y: float,
+        origin_x: float = 0.0,
+        origin_y: float = 0.0,
+        resolution: float = RESOLUTION
+    ) -> tuple[float | None, float | None, int | None, int | None]:
+        """
+        Navigate to the next unknown cell by:
+        1. Navigating to the nearest wall (100)
+        2. Following wall counter-clockwise to find unknowns
+
+        Returns:
+            real_x, real_y, grid_x, grid_y
+        """
+
+        height, width = grid.shape
+        grid_x = int((x - origin_x) / resolution)
+        grid_y = int((y - origin_y) / resolution)
+
+        if not (0 <= grid_x < width and 0 <= grid_y < height):
+            self.get_logger().warn("Robot start position is out of bounds.")
+            return None, None, None, None
+
+        # Step 1: Find the nearest wall (100)
+        visited = np.zeros_like(grid, dtype=bool)
+        q = deque([(grid_x, grid_y)])
+        visited[grid_y, grid_x] = True
+        wall_target = None
+
+        while q:
+            cx, cy = q.popleft()
+            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    if grid[ny, nx] == VAL_OCCUPIED:
+                        wall_target = (cx, cy)
+                        break
+                    if not visited[ny, nx] and grid[ny, nx] == VAL_FREE:
+                        visited[ny, nx] = True
+                        q.append((nx, ny))
+            if wall_target:
+                break
+
+        if wall_target is None:
+            self.get_logger().info("No wall found.")
+            return None, None, None, None
+
+        # Step 2: Wall-following CCW (simple loop around the wall)
+        def get_neighbors_ccw(x, y):
+            # Order: up, left, down, right (simulates CCW scan)
+            return [(x, y - 1), (x - 1, y), (x, y + 1), (x + 1, y)]
+
+        visited_wall = set()
+        q = deque([wall_target])
+        visited_wall.add(wall_target)
+
+        while q:
+            cx, cy = q.popleft()
+            for nx, ny in get_neighbors_ccw(cx, cy):
+                if 0 <= nx < width and 0 <= ny < height:
+                    if grid[ny, nx] == VAL_UNKNOWN:
+                        # Found unknown along wall
+                        real_x = origin_x + cx * resolution + resolution / 2
+                        real_y = origin_y + cy * resolution + resolution / 2
+                        return real_x, real_y, cx, cy
+                    elif grid[ny, nx] == VAL_FREE and (nx, ny) not in visited_wall:
+                        # Continue hugging wall
+                        wall_adjacent = any(
+                            0 <= ax < width and 0 <= ay < height and grid[ay, ax] == VAL_OCCUPIED
+                            for ax, ay in get_neighbors_ccw(nx, ny)
+                        )
+                        if wall_adjacent:
+                            visited_wall.add((nx, ny))
+                            q.append((nx, ny))
+
+        self.get_logger().info("No unknown found along wall.")
+        return None, None, None, None
 
     def explore_by_frontiers(self):
         """
@@ -432,7 +604,7 @@ class TimePredictorNode(Node):
         """
         # TODO
         
-        goal_x, goal_y, _, _ = self.explore_nearest_frontier(
+        goal_x, goal_y, _, _ = self.explore_nearest_frontier_v2(
             np.array(self.latest_map.data).reshape((self.latest_map.info.height, self.latest_map.info.width)),
             self.latest_odom.pose.pose.position.x,
             self.latest_odom.pose.pose.position.y,
