@@ -3,12 +3,12 @@
 
 MAKEFLAGS += --no-print-directory
 
-# to verify UBINTU_CODENAME out of makefile use `. /etc/os-release && echo $UBUNTU_CODENAME`
+# to verify UBINTU_CODENAME out of makefile use `. /etc/os-release && @echo $UBUNTU_CODENAME`
 UBUNTU_CODE = jammy
 ARCH = `dpkg --print-architecture`
 SUDO_PASSWORD = 12345678
 
-ROS2_WORKSPACE = ./ros2_workspace/
+ROS2_WORKSPACE = ./
 PROJECT_ROOT = ./
 
 REQUIREMENTS = requirements
@@ -79,13 +79,9 @@ ros2_prepare_workspace:
 	$(MAKE) ros2_copy_nodes
 	$(MAKE) ros2_build_workspace
 
-ros2_download_urg2_node:
-	cd $(ROS2_WORKSPACE)$(SRC); \
-	git clone --recursive https://github.com/Hokuyo-aut/urg_node2.git
-
 ros2_prepare_urg2_node:
-	$(MAKE) ros2_download_urg2_node
 	cd $(ROS2_WORKSPACE)$(SRC); \
+	git clone --recursive https://github.com/Hokuyo-aut/urg_node2.git; \
 	@echo $(SUDO_PASSWORD) | sudo -S rosdep init; \
 	cat ../../nodes/config/urg_node2.launch.py > urg_node2/launch/urg_node2.launch.py; \
 	cat ../../nodes/config/params_serial.yaml > urg_node2/config/params_serial.yaml; \
@@ -159,7 +155,6 @@ docker_init_devcontainer:
 	cp $(DOCKER_DEVELOPMENT)settings.json $(ROS2_WORKSPACE)$(VSCODE)
 
 	$(MAKE) ros2_copy_nodes
-	$(MAKE) ros2_download_urg2_node
 	cp $(REQUIREMENTS) $(ROS2_WORKSPACE)
 
 	@echo "Remember to source source /opt/ros/$(ROS_DISTRO)/setup.bash before running docker setup"
@@ -198,3 +193,11 @@ run_node_map_json_node:
 run_node_map_predictor:
 	$(MAKE) run_reminder
 	ros2 run map_predictor map_predictor
+
+run_node_autonomous_exploration:
+	$(MAKE) run_reminder
+	ros2 run autonomous_exploration control
+
+run_node_time_predictor:
+	$(MAKE) run_reminder
+	ros2 run time_predictor time_predictor
