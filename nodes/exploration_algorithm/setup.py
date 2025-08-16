@@ -1,8 +1,10 @@
 from setuptools import find_packages, setup
 
 package_name = 'exploration_algorithm'
+
 random_direction_node_name = 'random_direction_node'
 planned_node_name = 'planned_node'
+boundary_finder_node_name = 'boundary_finder_node'
 
 setup(
     name=package_name,
@@ -21,7 +23,8 @@ setup(
     entry_points={
         'console_scripts': [
             f'{random_direction_node_name} = {package_name}.{random_direction_node_name}:main',
-            f'{planned_node_name} = {package_name}.{planned_node_name}:main'
+            f'{planned_node_name} = {package_name}.{planned_node_name}:main',
+            f'{boundary_finder_node_name} = {package_name}.{boundary_finder_node_name}:main'
         ],
     },
     zip_safe=True,
