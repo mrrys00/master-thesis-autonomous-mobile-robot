@@ -157,7 +157,7 @@ docker_init_devcontainer:
 	$(MAKE) ros2_copy_nodes
 	cp $(REQUIREMENTS) $(ROS2_WORKSPACE)
 
-	@echo "Remember to source source /opt/ros/$(ROS_DISTRO)/setup.bash before running docker setup"
+	@echo "Remember to source /opt/ros/$(ROS_DISTRO)/setup.bash before running docker setup"
 
 docker_setup_devcontainer:
 	@if [ "$(ROS2_WORKSPACE)" = "$(PROJECT_ROOT)" ]; then \
@@ -177,7 +177,7 @@ docker_setup_devcontainer:
 # node runners
 run_reminder:
 	@echo source /opt/ros/$(ROS_DISTRO)/setup.bash
-	@echo "make sure to run source install/setup.bash before that"
+	@echo source install/setup.bash
 
 run_node_quick_simulation:
 	$(MAKE) run_reminder
