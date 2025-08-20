@@ -25,7 +25,7 @@ except Exception:
 # Motion/control params
 LOOKAHEAD_DISTANCE = params.get("lookahead_distance", 0.24)
 SPEED = params.get("speed", 0.18)
-EXPANSION_SIZE = params.get("expansion_size", 4)    # obstacle inflation (cells)
+EXPANSION_SIZE = params.get("expansion_size", 6)    # obstacle inflation (cells)
 TARGET_ERROR = params.get("target_error", 0.20)     # goal proximity (meters)
 ROBOT_R = params.get("robot_r", 0.3)                # robot radius (meters)
 
@@ -439,7 +439,10 @@ def build_boundary_path_ccw(occ_grid_msg, start_rc):
     if is_fully_enclosed(raw, (start_rc[1], start_rc[0])):
         return -1
 
-    inflated = costmap_inflate(occ_grid_msg.data, W, H, EXPANSION_SIZE)
+    # Inflate obstacles by ROBOT_R in meters, converted to cells
+    res = occ_grid_msg.info.resolution
+    robot_radius_cells = max(1, int(math.ceil(ROBOT_R / res)))
+    inflated = costmap_inflate(occ_grid_msg.data, W, H, max(EXPANSION_SIZE, robot_radius_cells))
     grid = ensure_raw_semantics(inflated, raw)  # -1 unknown, 0 free, 100 occ
 
     si, sj = start_rc
