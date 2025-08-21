@@ -1,67 +1,26 @@
 import rclpy
 from rclpy.node import Node
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid , Odometry
 from geometry_msgs.msg import Twist
-from collections import deque
+from sensor_msgs.msg import LaserScan
 import numpy as np
-import math, heapq, threading, time, sys
-
-# Optional smoothing (graceful fallback if SciPy not available)
-try:
-    import scipy.interpolate as si
-except Exception:
-    si = None
-    Node().get_logger().warn("[WARN] SciPy not available; BSpline smoothing will be disabled")
-
-# Try to load params from YAML if present; else defaults
-try:
-    import yaml
-    with open("src/autonomous_exploration/config/params.yaml", 'r') as f:
-        params = yaml.load(f, Loader=yaml.FullLoader)
-except Exception:
-    params = {}
-    Node().get_logger().warn("[WARN] Failed to load params.yaml; using defaults")
-
-# Motion/control params
-LOOKAHEAD_DISTANCE = params.get("lookahead_distance", 0.24)
-SPEED = params.get("speed", 0.18)
-EXPANSION_SIZE = params.get("expansion_size", 6)    # obstacle inflation (cells)
-TARGET_ERROR = params.get("target_error", 0.20)     # goal proximity (meters)
-ROBOT_R = params.get("robot_r", 0.3)                # robot radius (meters)
-
-# Planning params
-MAX_LOOP_POINTS = params.get("max_loop_points", 120)  # subsample the loop to this many points (max)
-FRONTIER_SUBSAMPLE = params.get("frontier_subsample", 2)  # take every Nth frontier cell before A*
-REPLAN_EARLY_SEC = params.get("replan_early_sec", 0.2)
-
-# ------------- Helper functions provided by user (do not modify semantics) -------------
-def get_reachable_mask(grid: np.ndarray, position: tuple[int, int]) -> np.ndarray:
-    h, w = grid.shape
-    visited = np.zeros_like(grid, dtype=bool)
-    q = deque([position])
-    if not (0 <= position[0] < w and 0 <= position[1] < h):
-        return visited
-    visited[position[1], position[0]] = True
-
-    while q:
-        x, y = q.popleft()
-        for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
-            nx, ny = x + dx, y + dy
-            if 0 <= nx < w and 0 <= ny < h:
-                if not visited[ny, nx] and grid[ny, nx] in [0, -1]:
-                    visited[ny, nx] = True
-                    q.append((nx, ny))
-
-    return visited
-
-def is_fully_enclosed(grid: np.ndarray, position: tuple[int, int]) -> bool:
-    reachable = get_reachable_mask(grid, position)
-    unknown_mask = (grid == -1)
-    return not np.any(reachable & unknown_mask)
-# --------------------------------------------------------------------------------------
+import heapq , math , random , yaml
+import scipy.interpolate as si
+import sys , threading , time
 
 
-def euler_from_quaternion(x, y, z, w):
+with open("src/autonomous_exploration/config/params.yaml", 'r') as file:
+    params = yaml.load(file, Loader=yaml.FullLoader)
+
+lookahead_distance = params["lookahead_distance"]
+speed = params["speed"]
+expansion_size = params["expansion_size"]
+target_error = params["target_error"]
+robot_r = params["robot_r"]
+
+pathGlobal = 0
+
+def euler_from_quaternion(x,y,z,w):
     t0 = +2.0 * (w * x + y * z)
     t1 = +1.0 - 2.0 * (x * x + y * y)
     roll_x = math.atan2(t0, t1)
@@ -74,549 +33,383 @@ def euler_from_quaternion(x, y, z, w):
     yaw_z = math.atan2(t3, t4)
     return yaw_z
 
-
 def heuristic(a, b):
-    return math.hypot(b[0] - a[0], b[1] - a[1])
+    return np.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2)
 
-
-def astar(grid01, start, goal):
-    """
-    A* on binary grid (0 free, 1 blocked).
-    Nodes are (row, col).
-    """
-    H, W = grid01.shape
-    nbrs = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
-    closed = set()
-    came = {}
-    g = {start: 0.0}
-    f = {start: heuristic(start, goal)}
-    openh = []
-    heapq.heappush(openh, (f[start], start))
-
-    while openh:
-        _, cur = heapq.heappop(openh)
-        if cur == goal:
-            path = [cur]
-            while cur in came:
-                cur = came[cur]
-                path.append(cur)
-            path.reverse()
-            return path
-
-        closed.add(cur)
-        ci, cj = cur
-        for di, dj in nbrs:
-            ni, nj = ci + di, cj + dj
-            if not (0 <= ni < H and 0 <= nj < W):
+# -------------------- PATH PLANNING (A*) --------------------
+def astar(array, start, goal):
+    neighbors = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
+    close_set = set()
+    came_from = {}
+    gscore = {start:0}
+    fscore = {start:heuristic(start, goal)}
+    oheap = []
+    heapq.heappush(oheap, (fscore[start], start))
+    while oheap:
+        current = heapq.heappop(oheap)[1]
+        if current == goal:
+            data = []
+            while current in came_from:
+                data.append(current)
+                current = came_from[current]
+            data = data + [start]
+            data = data[::-1]
+            return data
+        close_set.add(current)
+        for i, j in neighbors:
+            neighbor = current[0] + i, current[1] + j
+            tentative_g_score = gscore[current] + heuristic(current, neighbor)
+            if 0 <= neighbor[0] < array.shape[0]:
+                if 0 <= neighbor[1] < array.shape[1]:                
+                    if array[neighbor[0]][neighbor[1]] == 1:
+                        continue
+                else:
+                    continue
+            else:
                 continue
-            if grid01[ni, nj] == 1:
+            if neighbor in close_set and tentative_g_score >= gscore.get(neighbor, 0):
                 continue
-            step_cost = math.hypot(di, dj)
-            tentative_g = g[cur] + step_cost
-            if (ni, nj) in closed and tentative_g >= g.get((ni, nj), float('inf')):
-                continue
-            if tentative_g < g.get((ni, nj), float('inf')) or (ni, nj) not in [x[1] for x in openh]:
-                came[(ni, nj)] = cur
-                g[(ni, nj)] = tentative_g
-                f[(ni, nj)] = tentative_g + heuristic((ni, nj), goal)
-                heapq.heappush(openh, (f[(ni, nj)], (ni, nj)))
-    # closest reconstruction
-    closest = None
-    bestf = float('inf')
-    for k, val in f.items():
-        if val < bestf:
-            bestf = val
-            closest = k
-    if closest is None:
-        return None
-    path = [closest]
-    while closest in came:
-        closest = came[closest]
-        path.append(closest)
-    path.reverse()
+            if  tentative_g_score < gscore.get(neighbor, 0) or neighbor not in [i[1]for i in oheap]:
+                came_from[neighbor] = current
+                gscore[neighbor] = tentative_g_score
+                fscore[neighbor] = tentative_g_score + heuristic(neighbor, goal)
+                heapq.heappush(oheap, (fscore[neighbor], neighbor))
+    # # UNCOMMENT If no path to goal was found, return closest path to goal
+    # if goal not in came_from:
+    #     closest_node = None
+    #     closest_dist = float('inf')
+    #     for node in close_set:
+    #         dist = heuristic(node, goal)
+    #         if dist < closest_dist:
+    #             closest_node = node
+    #             closest_dist = dist
+    #     if closest_node is not None:
+    #         data = []
+    #         while closest_node in came_from:
+    #             data.append(closest_node)
+    #             closest_node = came_from[closest_node]
+    #         data = data + [start]
+    #         data = data[::-1]
+    #         return data
+    return False
+
+# -------------------- B-SPLINE --------------------
+def bspline_planning(array, sn):
+    try:
+        array = np.array(array)
+        x = array[:, 0]
+        y = array[:, 1]
+        N = 2
+        t = range(len(x))
+        x_tup = si.splrep(t, x, k=N)
+        y_tup = si.splrep(t, y, k=N)
+        
+        x_list = list(x_tup)
+        xl = x.tolist()
+        x_list[1] = xl + [0.0, 0.0, 0.0, 0.0]
+        
+        y_list = list(y_tup)
+        yl = y.tolist()
+        y_list[1] = yl + [0.0, 0.0, 0.0, 0.0]
+        
+        ipl_t = np.linspace(0.0, len(x) - 1, sn)
+        rx = si.splev(ipl_t, x_list)
+        ry = si.splev(ipl_t, y_list)
+        path = [(rx[i],ry[i]) for i in range(len(rx))]
+    except:
+        path = array
     return path
 
-
-def bspline_planning(path, samples):
-    if si is None:
-        return path
-    if path is None or len(path) < 3:
-        return path
-    try:
-        arr = np.array(path, dtype=float)
-        x = arr[:, 0]
-        y = arr[:, 1]
-        t = range(len(x))
-        k = min(3, max(1, len(x) - 1))
-        tx = si.splrep(t, x, k=k)
-        ty = si.splrep(t, y, k=k)
-        tt = np.linspace(0.0, len(x) - 1, samples)
-        rx = si.splev(tt, tx)
-        ry = si.splev(tt, ty)
-        return [(rx[i], ry[i]) for i in range(len(rx))]
-    except Exception:
-        return path
-
-
-def costmap_inflate(data, width, height, expansion_cells):
-    """
-    Inflate obstacles: keep -1 unknown, set 100 on neighbors within EXPANSION_SIZE.
-    """
-    grid = np.array(data, dtype=np.int16).reshape(height, width)
-    occ_y, occ_x = np.where(grid == 100)
-    if len(occ_y) > 0:
-        for di in range(-expansion_cells, expansion_cells + 1):
-            for dj in range(-expansion_cells, expansion_cells + 1):
-                if di == 0 and dj == 0:
-                    continue
-                yi = np.clip(occ_y + di, 0, height - 1)
-                xj = np.clip(occ_x + dj, 0, width - 1)
-                grid[yi, xj] = 100
-    return grid
-
-
-def ensure_raw_semantics(inflated, raw):
-    """
-    Ensure grid semantics:
-    - unknown from raw stays -1
-    - free stays 0
-    - everything else 100
-    """
-    g = inflated.copy()
-    unk = (raw == -1)
-    g[unk] = -1
-    g[(g != -1) & (g != 0)] = 100
-    return g
-
-
-def reachable_free_mask(grid, start_rc):
-    """
-    BFS flood only over free=0 cells from start_rc (row, col) to restrict frontier to reachable area.
-    """
-    H, W = grid.shape
-    mask = np.zeros((H, W), dtype=bool)
-    si, sj = start_rc
-    if not (0 <= si < H and 0 <= sj < W):
-        return mask
-    if grid[si, sj] != 0:
-        return mask
-    q = deque([(si, sj)])
-    mask[si, sj] = True
-    while q:
-        i, j = q.popleft()
-        for di, dj in [(-1,0),(1,0),(0,-1),(0,1)]:
-            ni, nj = i + di, j + dj
-            if 0 <= ni < H and 0 <= nj < W and not mask[ni, nj] and grid[ni, nj] == 0:
-                mask[ni, nj] = True
-                q.append((ni, nj))
-    return mask
-
-
-def compute_frontier_mask(grid, reachable_mask):
-    """
-    Frontier: reachable free cell (0) that has a 4-neighbor unknown (-1).
-    """
-    H, W = grid.shape
-    fr = np.zeros((H, W), dtype=np.uint8)
-    for i in range(H):
-        for j in range(W):
-            if grid[i, j] == 0 and reachable_mask[i, j]:
-                if (i > 0 and grid[i-1, j] == -1) or \
-                   (i < H-1 and grid[i+1, j] == -1) or \
-                   (j > 0 and grid[i, j-1] == -1) or \
-                   (j < W-1 and grid[i, j+1] == -1):
-                    fr[i, j] = 1
-    return fr
-
-
-def nearest_frontier(frontier_mask, start_rc):
-    ys, xs = np.where(frontier_mask > 0)
-    if len(ys) == 0:
-        return None
-    si, sj = start_rc
-    d2 = (ys - si) * (ys - si) + (xs - sj) * (xs - sj)
-    k = int(np.argmin(d2))
-    return (int(ys[k]), int(xs[k]))
-
-
-def moore_trace_ccw(frontier_mask, grid):
-    """
-    Trace a CCW loop along frontier cells using a left-hand (unknown-on-left) rule.
-    Returns an ordered list of (row, col) forming a loop; may be open if break occurs.
-    """
-    H, W = frontier_mask.shape
-    points = list(zip(*np.where(frontier_mask > 0)))
-    if not points:
-        return []
-
-    # Start at the frontier point with minimal (row, col) for determinism
-    start = min(points)
-    # If we have a better start (nearest to an unknown), pick it
-    def has_unknown_left(i, j, d):
-        # left direction relative to heading d
-        dirs = [(0,1),(1,0),(0,-1),(-1,0)]  # E,S,W,N
-        li, lj = dirs[(d - 1) % 4]
-        ui, uj = i + li, j + lj
-        return 0 <= ui < H and 0 <= uj < W and grid[ui, uj] == -1
-
-    # Choose initial heading so that unknown is on the left
-    # Try all four; pick the one that has unknown on left and a frontier ahead
-    dirs = [(0,1),(1,0),(0,-1),(-1,0)]  # E,S,W,N
-    d = 0
-    chosen = False
-    for cand in range(4):
-        if has_unknown_left(start[0], start[1], cand):
-            fi, fj = start[0] + dirs[cand][0], start[1] + dirs[cand][1]
-            if 0 <= fi < H and 0 <= fj < W and frontier_mask[fi, fj] > 0:
-                d = cand
-                chosen = True
-                break
-    if not chosen:
-        # fallback: pick any direction that keeps unknown on left
-        for cand in range(4):
-            if has_unknown_left(start[0], start[1], cand):
-                d = cand
-                chosen = True
-                break
-
-    path = [start]
-    cur = start
-    max_steps = max(2000, len(points) * 8)
-    visited_times = {start: 1}
-
-    for _ in range(max_steps):
-        # left, forward, right, back preference to keep unknown on left (CCW)
-        for turn in [-1, 0, +1, +2]:
-            nd = (d + turn) % 4
-            ni, nj = cur[0] + dirs[nd][0], cur[1] + dirs[nd][1]
-            if 0 <= ni < H and 0 <= nj < W and frontier_mask[ni, nj] > 0:
-                # Ensure unknown remains on left where possible
-                if has_unknown_left(ni, nj, nd) or turn != -1:
-                    cur = (ni, nj)
-                    d = nd
-                    path.append(cur)
-                    visited_times[cur] = visited_times.get(cur, 0) + 1
-                    break
-        else:
-            # No neighbor frontier found
+# -------------------- PURE PURSUIT --------------------
+def pure_pursuit(current_x, current_y, current_heading, path, index):
+    global lookahead_distance
+    closest_point = None
+    v = speed
+    for i in range(index,len(path)):
+        x = path[i][0]
+        y = path[i][1]
+        distance = math.hypot(current_x - x, current_y - y)
+        if lookahead_distance < distance:
+            closest_point = (x, y)
+            index = i
             break
-
-        # Closed loop detection: back at start and progressed enough
-        if cur == start and len(path) > 10:
-            break
-        # Avoid infinite cycling on tiny loops
-        if visited_times.get(cur, 0) > 4:
-            break
-
-    # Deduplicate consecutive duplicates
-    out = []
-    for p in path:
-        if not out or out[-1] != p:
-            out.append(p)
-    return out
-
-
-def order_ccw_by_angle(points):
-    """
-    Order a set of (row,col) points counter-clockwise by angle around their centroid.
-    """
-    if not points:
-        return []
-    ci = sum(p[0] for p in points) / len(points)
-    cj = sum(p[1] for p in points) / len(points)
-    # Image rows increase downward; flip row to y = -row for proper CCW in world
-    ordered = sorted(points, key=lambda p: math.atan2(-(p[0]-ci), (p[1]-cj)))
-    return ordered
-
-
-def ensure_ccw_world(path_grid, res, ox, oy):
-    """
-    Ensure the closed path has CCW orientation in world coordinates (x right, y up).
-    Reverse if clockwise.
-    """
-    if not path_grid or len(path_grid) < 3:
-        return path_grid
-    pts = [(c*res + ox, r*res + oy) for (r, c) in path_grid]
-    # Signed area (shoelace): >0 => CCW
-    area = 0.0
-    for i in range(len(pts)):
-        x1, y1 = pts[i]
-        x2, y2 = pts[(i+1) % len(pts)]
-        area += (x1 * y2 - x2 * y1)
-    if area < 0:
-        return list(reversed(path_grid))
-    return path_grid
-
-
-def grid_to_world(path_grid, res, ox, oy):
-    return [(c * res + ox, r * res + oy) for (r, c) in path_grid]
-
-
-def path_length(path_world):
-    if not path_world or len(path_world) < 2:
-        return 0.0
-    dist = 0.0
-    for i in range(1, len(path_world)):
-        x0, y0 = path_world[i-1]
-        x1, y1 = path_world[i]
-        dist += math.hypot(x1 - x0, y1 - y0)
-    return dist
-
-
-def pure_pursuit(x, y, yaw, path, idx):
-    """
-    Basic pure pursuit to follow the world-frame path.
-    """
-    if not path:
-        return 0.0, 0.0, idx
-    v = SPEED
-    target = None
-    for i in range(idx, len(path)):
-        px, py = path[i]
-        d = math.hypot(px - x, py - y)
-        if d > LOOKAHEAD_DISTANCE:
-            target = (px, py)
-            idx = i
-            break
-    if target is None:
-        target = path[-1]
-        idx = len(path) - 1
-    tx, ty = target
-    th = math.atan2(ty - y, tx - x)
-    err = th - yaw
-    # Normalize
-    while err > math.pi:
-        err -= 2.0 * math.pi
-    while err < -math.pi:
-        err += 2.0 * math.pi
-    # Slow for sharp turns
-    if abs(err) > math.pi/6:
+    if closest_point is not None:
+        target_heading = math.atan2(closest_point[1] - current_y, closest_point[0] - current_x)
+        desired_steering_angle = target_heading - current_heading
+    else:
+        target_heading = math.atan2(path[-1][1] - current_y, path[-1][0] - current_x)
+        desired_steering_angle = target_heading - current_heading
+        index = len(path)-1
+    if desired_steering_angle > math.pi:
+        desired_steering_angle -= 2 * math.pi
+    elif desired_steering_angle < -math.pi:
+        desired_steering_angle += 2 * math.pi
+    if desired_steering_angle > math.pi/6 or desired_steering_angle < -math.pi/6:
+        sign = 1 if desired_steering_angle > 0 else -1
+        desired_steering_angle = sign * math.pi/4
         v = 0.0
-        err = math.copysign(math.pi/4, err)
-    return v, err, idx
+    return v,desired_steering_angle,index
+
+# -------------------- FRONTIER DETECTION --------------------
+def frontierB(matrix):
+    matrix_values = set(matrix.flatten())
+    for i in range(len(matrix)):
+        for j in range(len(matrix[i])):
+            if matrix[i][j] == 0.0:
+                has_unknown = False
+                has_occupied = False
+                for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
+                    ni, nj = i+dx, j+dy
+                    if 0 <= ni < len(matrix) and 0 <= nj < len(matrix[0]):
+                        if matrix[ni][nj] < 0:
+                            has_unknown = True
+                        if matrix[ni][nj] == 1.0:
+                            has_occupied = True
+                if has_unknown and has_occupied:
+                    matrix[i][j] = 2
+                    print("[INFO] FRONTIER DETECTED AT", (i, j))
+    print(matrix)
+    print(matrix_values)
+    return matrix
+
+# -------------------- GROUPING --------------------
+def assign_groups(matrix):
+    group = 1
+    groups = {}
+    for i in range(len(matrix)):
+        for j in range(len(matrix[0])):
+            if matrix[i][j] == 2:
+                group = dfs(matrix, i, j, group, groups)
+    return matrix, groups
+
+def dfs(matrix, i, j, group, groups):
+    if i < 0 or i >= len(matrix) or j < 0 or j >= len(matrix[0]):
+        return group
+    if matrix[i][j] != 2:
+        return group
+    if group in groups:
+        groups[group].append((i, j))
+    else:
+        groups[group] = [(i, j)]
+    matrix[i][j] = 0
+    dfs(matrix, i + 1, j, group, groups)
+    dfs(matrix, i - 1, j, group, groups)
+    dfs(matrix, i, j + 1, group, groups)
+    dfs(matrix, i, j - 1, group, groups)
+    dfs(matrix, i + 1, j + 1, group, groups)
+    dfs(matrix, i - 1, j - 1, group, groups)
+    dfs(matrix, i - 1, j + 1, group, groups)
+    dfs(matrix, i + 1, j - 1, group, groups)
+    return group + 1
 
 
-def stitch_with_astar(binary_grid, seq_cells):
-    """
-    Connect a sequence of grid cells (row,col) with A* segments.
-    """
-    if not seq_cells:
-        return None
-    out = []
-    for k in range(len(seq_cells)-1):
-        a = seq_cells[k]
-        b = seq_cells[k+1]
-        seg = astar(binary_grid, a, b)
-        if seg is None or len(seg) == 0:
-            continue
-        if not out:
-            out.extend(seg)
+# -------------------- OBSTACLE CLUSTERING --------------------
+def dfs_obstacle(matrix, i, j, group, groups):
+    if i < 0 or i >= len(matrix) or j < 0 or j >= len(matrix[0]):
+        return group
+    if matrix[i][j] != 100:
+        return group
+    if group in groups:
+        groups[group].append((i, j))
+    else:
+        groups[group] = [(i, j)]
+    matrix[i][j] = -999  # mark visited
+    dfs_obstacle(matrix, i + 1, j, group, groups)
+    dfs_obstacle(matrix, i - 1, j, group, groups)
+    dfs_obstacle(matrix, i, j + 1, group, groups)
+    dfs_obstacle(matrix, i, j - 1, group, groups)
+    dfs_obstacle(matrix, i + 1, j + 1, group, groups)
+    dfs_obstacle(matrix, i - 1, j - 1, group, groups)
+    dfs_obstacle(matrix, i - 1, j + 1, group, groups)
+    dfs_obstacle(matrix, i + 1, j - 1, group, groups)
+    return group + 1
+
+def assign_obstacle_groups(matrix):
+    group = 1
+    groups = {}
+    for i in range(len(matrix)):
+        for j in range(len(matrix[0])):
+            if matrix[i][j] == 100:
+                group = dfs_obstacle(matrix, i, j, group, groups)
+    return groups
+
+# -------------------- FRONTIER SELECTION --------------------
+def fGroups(groups):
+    sorted_groups = sorted(groups.items(), key=lambda x: len(x[1]), reverse=True)
+    return sorted_groups
+
+def calculate_centroid(x_coords, y_coords):
+    n = len(x_coords)
+    return (int(sum(x_coords) / n), int(sum(y_coords) / n))
+
+def frontierTouchesObstacle(frontier_group, obstacle_group):
+    obstacle_set = set(obstacle_group)
+    for fx, fy in frontier_group:
+        for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
+            if (fx+dx, fy+dy) in obstacle_set:
+                return True
+    return False
+
+def findClosestGroup(matrix, groups, current, resolution, originX, originY):
+    targetP = None
+    obstacle_groups = assign_obstacle_groups(matrix.copy())
+    largest_obstacle = max(obstacle_groups.items(), key=lambda x: len(x[1]))[1] if obstacle_groups else []
+    chosen_group = None
+
+    for gid, frontier_group in groups:
+        if frontierTouchesObstacle(frontier_group, largest_obstacle):
+            chosen_group = frontier_group
+            break
+
+    if not chosen_group and groups:
+        chosen_group = groups[0][1]  # fallback: biggest frontier
+
+    if chosen_group:
+        middle = calculate_centroid([p[0] for p in chosen_group],[p[1] for p in chosen_group]) 
+        path = astar(matrix, current, middle)
+        path = [(p[1]*resolution+originX,p[0]*resolution+originY) for p in path]
+        targetP = path
+    return targetP
+
+# -------------------- COSTMAP + EXPLORATION --------------------
+def pathLength(path):
+    points = np.array(path)
+    differences = np.diff(points, axis=0)
+    distances = np.hypot(differences[:,0], differences[:,1])
+    return np.sum(distances)
+
+def costmap(data,width,height,resolution):
+    data = np.array(data).reshape(height,width)
+    wall = np.where(data == 100)
+    for i in range(-expansion_size,expansion_size+1):
+        for j in range(-expansion_size,expansion_size+1):
+            if i  == 0 and j == 0:
+                continue
+            x = wall[0]+i
+            y = wall[1]+j
+            x = np.clip(x,0,height-1)
+            y = np.clip(y,0,width-1)
+            data[x,y] = 100
+    data = data*resolution
+    return data
+
+def exploration(data,width,height,resolution,column,row,originX,originY):
+        global pathGlobal
+        data = costmap(data,width,height,resolution)
+        data[row][column] = 0
+        data[data > 5] = 1
+        data = frontierB(data)
+        data,groups = assign_groups(data)
+        groups = fGroups(groups)
+        if len(groups) == 0:
+            path = -1
         else:
-            if out[-1] == seg[0]:
-                out.extend(seg[1:])
+            data[data < 0] = 1
+            path = findClosestGroup(data,groups,(row,column),resolution,originX,originY)
+            if path != None:
+                path = bspline_planning(path,len(path)*5)
             else:
-                out.extend(seg)
-    return out if out else None
+                path = -1
+        pathGlobal = path
+        return
 
-
-def build_boundary_path_ccw(occ_grid_msg, start_rc):
-    """
-    Build a CCW wall-hugging path along the outer frontier near the robot.
-    Returns:
-      -1 if fully enclosed (stop condition)
-       list of world (x,y) waypoints otherwise (may be None if not ready)
-    """
-    W = occ_grid_msg.info.width
-    H = occ_grid_msg.info.height
-    res = occ_grid_msg.info.resolution
-    ox = occ_grid_msg.info.origin.position.x
-    oy = occ_grid_msg.info.origin.position.y
-
-    raw = np.array(occ_grid_msg.data, dtype=np.int16).reshape(H, W)
-
-    # Stop if boundary is fully enclosed per provided function
-    # Note: function expects (x, y) -> (col, row)
-    if is_fully_enclosed(raw, (start_rc[1], start_rc[0])):
-        return -1
-
-    # Inflate obstacles by ROBOT_R in meters, converted to cells
-    res = occ_grid_msg.info.resolution
-    robot_radius_cells = max(1, int(math.ceil(ROBOT_R / res)))
-    inflated = costmap_inflate(occ_grid_msg.data, W, H, max(EXPANSION_SIZE, robot_radius_cells))
-    grid = ensure_raw_semantics(inflated, raw)  # -1 unknown, 0 free, 100 occ
-
-    si, sj = start_rc
-    if not (0 <= si < H and 0 <= sj < W) or grid[si, sj] != 0:
-        # Snap to nearest free within a small radius
-        found = None
-        for rad in range(1, 8):
-            for di in range(-rad, rad+1):
-                for dj in range(-rad, rad+1):
-                    ni, nj = si + di, sj + dj
-                    if 0 <= ni < H and 0 <= nj < W and grid[ni, nj] == 0:
-                        found = (ni, nj)
-                        break
-                if found:
-                    break
-            if found:
+# -------------------- LOCAL CONTROL --------------------
+def localControl(scan):
+    v = None
+    w = None
+    for i in range(60):
+        if scan[i] < robot_r:
+            v = 0.2
+            w = -math.pi/4 
+            break
+    if v == None:
+        for i in range(300,360):
+            if scan[i] < robot_r:
+                v = 0.2
+                w = math.pi/4
                 break
-        if not found:
-            return None
-        start_rc = found
+    return v,w
 
-    reachable = reachable_free_mask(grid, start_rc)
-    frontier = compute_frontier_mask(grid, reachable)
-    if frontier.sum() == 0:
-        return None
-
-    # Trace a CCW loop; fallback to angle-ordering if tracing fails
-    loop_cells = moore_trace_ccw(frontier, grid)
-    if not loop_cells or len(loop_cells) < 5:
-        pts = list(zip(*np.where(frontier > 0)))
-        if not pts:
-            return None
-        loop_cells = order_ccw_by_angle(pts)
-
-    # Make sure CCW in world frame
-    loop_cells = ensure_ccw_world(loop_cells, res, ox, oy)
-
-    # Subsample to reduce density for stitching and tracking
-    if FRONTIER_SUBSAMPLE > 1:
-        loop_cells = loop_cells[::FRONTIER_SUBSAMPLE]
-    if len(loop_cells) > MAX_LOOP_POINTS:
-        step = max(1, len(loop_cells) // MAX_LOOP_POINTS)
-        loop_cells = loop_cells[::step]
-
-    # Build binary grid for A* (unknown and occ blocked)
-    bin_grid = np.zeros_like(grid, dtype=np.uint8)
-    bin_grid[grid != 0] = 1  # block unknown and occ
-
-    # Connect the loop with A*
-    stitched = stitch_with_astar(bin_grid, loop_cells)
-    if stitched is None or len(stitched) < 2:
-        # Fallback: go to nearest frontier cell only
-        nf = nearest_frontier(frontier, start_rc)
-        if nf is None:
-            return None
-        stitched = astar(bin_grid, start_rc, nf)
-        if stitched is None:
-            return None
-
-    # Convert to world and smooth
-    world_path = grid_to_world(stitched, res, ox, oy)
-    world_path = bspline_planning(world_path, max(10, len(world_path)*3))
-    return world_path
-
-
-class BoundaryExplorer(Node):
+# -------------------- ROS2 NODE --------------------
+class navigationControl(Node):
     def __init__(self):
-        super().__init__("boundary_explorer_ccw")
-        self.sub_map = self.create_subscription(OccupancyGrid, "map", self.on_map, 10)
-        self.sub_odom = self.create_subscription(Odometry, "odom", self.on_odom, 10)
-        self.pub_cmd = self.create_publisher(Twist, "cmd_vel", 10)
+        super().__init__('Exploration')
+        self.subscription = self.create_subscription(OccupancyGrid,'map',self.map_callback,10)
+        self.subscription = self.create_subscription(Odometry,'odom',self.odom_callback,10)
+        self.subscription = self.create_subscription(LaserScan,'scan',self.scan_callback,10)
+        self.publisher = self.create_publisher(Twist, 'cmd_vel', 10)
+        print("[INFO] EXPLORATION MODE ACTIVE")
+        self.kesif = True
+        threading.Thread(target=self.exp).start()
+        
+    def exp(self):
+        twist = Twist()
+        while True:
+            if not hasattr(self,'map_data') or not hasattr(self,'odom_data') or not hasattr(self,'scan_data'):
+                time.sleep(0.1)
+                continue
+            if self.kesif == True:
+                if isinstance(pathGlobal, int) and pathGlobal == 0:
+                    column = int((self.x - self.originX)/self.resolution)
+                    row = int((self.y- self.originY)/self.resolution)
+                    exploration(self.data,self.width,self.height,self.resolution,column,row,self.originX,self.originY)
+                    self.path = pathGlobal
+                else:
+                    self.path = pathGlobal
+                if isinstance(self.path, int) and self.path == -1:
+                    print("[INFO] EXPLORATION COMPLETED")
+                    sys.exit()
+                self.c = int((self.path[-1][0] - self.originX)/self.resolution) 
+                self.r = int((self.path[-1][1] - self.originY)/self.resolution) 
+                self.kesif = False
+                self.i = 0
+                print("[INFO] NEW GOAL SELECTED")
+                t = pathLength(self.path)/speed
+                t = t - 0.2
+                self.t = threading.Timer(t,self.target_callback)
+                self.t.start()
+            else:
+                v , w = localControl(self.scan)
+                if v == None:
+                    v, w,self.i = pure_pursuit(self.x,self.y,self.yaw,self.path,self.i)
+                if(abs(self.x - self.path[-1][0]) < target_error and abs(self.y - self.path[-1][1]) < target_error):
+                    v = 0.0
+                    w = 0.0
+                    self.kesif = True
+                    print("[INFO] GOAL REACHED")
+                    self.t.join()
+                twist.linear.x = v
+                twist.angular.z = w
+                self.publisher.publish(twist)
+                time.sleep(0.1)
 
-        self.map_msg = None
-        self.odom_msg = None
-        self.path = None
-        self.idx = 0
-        self.following = False
-        self.replan_timer = None
+    def target_callback(self):
+        exploration(self.data,self.width,self.height,self.resolution,self.c,self.r,self.originX,self.originY)
+        
+    def scan_callback(self,msg):
+        self.scan_data = msg
+        self.scan = msg.ranges
 
-        self.get_logger().info("[INFO] Boundary-exploration (CCW wall-hugging) active")
-        threading.Thread(target=self.spin_loop, daemon=True).start()
+    def map_callback(self,msg):
+        self.map_data = msg
+        self.resolution = self.map_data.info.resolution
+        self.originX = self.map_data.info.origin.position.x
+        self.originY = self.map_data.info.origin.position.y
+        self.width = self.map_data.info.width
+        self.height = self.map_data.info.height
+        self.data = self.map_data.data
 
-    def on_map(self, msg: OccupancyGrid):
-        self.map_msg = msg
-        self.resolution = msg.info.resolution
-        self.originX = msg.info.origin.position.x
-        self.originY = msg.info.origin.position.y
-        self.width = msg.info.width
-        self.height = msg.info.height
-
-    def on_odom(self, msg: Odometry):
-        self.odom_msg = msg
+    def odom_callback(self,msg):
+        self.odom_data = msg
         self.x = msg.pose.pose.position.x
         self.y = msg.pose.pose.position.y
-        self.yaw = euler_from_quaternion(msg.pose.pose.orientation.x,
-                                         msg.pose.pose.orientation.y,
-                                         msg.pose.pose.orientation.z,
-                                         msg.pose.pose.orientation.w)
-
-    def spin_loop(self):
-        tw = Twist()
-        while rclpy.ok():
-            if self.map_msg is None or self.odom_msg is None:
-                time.sleep(0.05)
-                continue
-
-            # Convert robot world pose to grid indices (row, col)
-            row = int((self.y - self.originY) / self.resolution)
-            col = int((self.x - self.originX) / self.resolution)
-            start_rc = (row, col)
-
-            # Planning phase
-            if not self.following:
-                try:
-                    plan = build_boundary_path_ccw(self.map_msg, start_rc)
-                except Exception as e:
-                    self.get_logger().warn(f"Planning exception: {e}")
-                    plan = None
-
-                if isinstance(plan, int) and plan == -1:
-                    self.get_logger().info("[INFO] Exploration finished: boundary fully enclosed")
-                    tw.linear.x = 0.0
-                    tw.angular.z = 0.0
-                    self.pub_cmd.publish(tw)
-                    time.sleep(0.2)
-                    sys.exit(0)
-
-                if plan is None or len(plan) < 2:
-                    # No plan yet; hold
-                    tw.linear.x = 0.0
-                    tw.angular.z = 0.0
-                    self.pub_cmd.publish(tw)
-                    time.sleep(0.1)
-                    continue
-
-                self.path = plan
-                self.idx = 0
-                self.following = True
-
-                # Estimate traversal time and schedule early replan
-                T = max(0.5, path_length(self.path) / max(1e-3, SPEED) - REPLAN_EARLY_SEC)
-                if self.replan_timer is not None:
-                    try:
-                        self.replan_timer.cancel()
-                    except Exception:
-                        pass
-                self.replan_timer = threading.Timer(T, self.request_replan)
-                self.replan_timer.daemon = True
-                self.replan_timer.start()
-                self.get_logger().info("[INFO] New CCW boundary segment set")
-
-            # Control phase: follow the path
-            v, w, self.idx = pure_pursuit(self.x, self.y, self.yaw, self.path, self.idx)
-
-            # End segment if we reach the end of current path
-            if self.path and abs(self.x - self.path[-1][0]) < TARGET_ERROR and abs(self.y - self.path[-1][1]) < TARGET_ERROR:
-                v, w = 0.0, 0.0
-                self.following = False
-                if self.replan_timer:
-                    self.replan_timer.join(timeout=0.1)
-                self.get_logger().info("[INFO] Reached segment end; replanning")
-
-            tw.linear.x = v
-            tw.angular.z = w
-            self.pub_cmd.publish(tw)
-            time.sleep(0.1)
-
-    def request_replan(self):
-        self.following = False
+        self.yaw = euler_from_quaternion(msg.pose.pose.orientation.x,msg.pose.pose.orientation.y,
+        msg.pose.pose.orientation.z,msg.pose.pose.orientation.w)
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = BoundaryExplorer()
+    node = navigationControl()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
