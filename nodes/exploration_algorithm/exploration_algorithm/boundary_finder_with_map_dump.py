@@ -34,6 +34,8 @@ VAL_INACCESSIBLE = 101
 VAL_CURR_POSITION = 102
 VAL_NEXT_GOAL = 103
 
+VAL_LARGEST_OBSTACLE = 104
+
 MAP_DUMP = True
 
 VAL_OCCUPIED_MATRIX = 1.0
@@ -93,6 +95,7 @@ class BoundaryExploration(Node):
         self.t: threading.Timer
         
         self.last_frontier_groups: dict[int, list[tuple[int, int]]] = {}
+        self.largest_obstacle: list[tuple[int, int]] = []
         
     def exp(self):
         twist = Twist()
@@ -352,45 +355,38 @@ class BoundaryExploration(Node):
         return matrix
 
     # -------------------- GROUPING --------------------
-    def assign_groups(self, matrix: list[float], value_marker: int, visited_marker: int) -> tuple[list[float], dict[int, list[tuple[int, int]]]]:
+    def directions_generator(self, _range: int = 1) -> list[tuple[int, int]]:
+        """
+        Generate neighbor directions for a square grid.
+
+        Args:
+            rande (int): neighborhood radius (>=1).
+                        Example: 1 → 8 neighbors, 2 → 24 neighbors, etc.
+
+        Returns:
+            list[tuple[int, int]]: list of (dx, dy) offsets.
+        """
+        directions = []
+        for dx in range(-_range, _range + 1):
+            for dy in range(-_range, _range + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                directions.append((dx, dy))
+        return directions
+    
+    def assign_groups(self,
+            matrix: list[list[float]],
+            value_marker: int,
+            visited_marker: int,
+            directions: list[tuple[int, int]] = directions_generator(1)) -> tuple[list[float], dict[int, list[tuple[int, int]]]]:
         group = 1
         groups = {}
         for i in range(len(matrix)):
             for j in range(len(matrix[0])):
                 if matrix[i][j] == value_marker:
-                    group = self.dfs(matrix, i, j, group, groups, value_marker, visited_marker)
+                    group = self.dfs(matrix, i, j, group, groups, value_marker, visited_marker, directions)
 
         return matrix, groups
-
-    # def dfs(self, 
-    #         matrix: list[float],
-    #         i: int,
-    #         j: int,
-    #         group: int,
-    #         groups: dict[int, list[tuple[int, int]]],
-    #         value_marker: int,
-    #         visited_marker: int
-    #     ) -> int:
-    #     if i < 0 or i >= len(matrix) or j < 0 or j >= len(matrix[0]):
-    #         return group
-    #     if matrix[i][j] != value_marker:
-    #         return group
-    #     if group in groups:
-    #         groups[group].append((i, j))
-    #     else:
-    #         groups[group] = [(i, j)]
-
-    #     matrix[i][j] = visited_marker
-    #     self.dfs(matrix, i + 1, j, group, groups, value_marker, visited_marker)
-    #     self.dfs(matrix, i - 1, j, group, groups, value_marker, visited_marker)
-    #     self.dfs(matrix, i, j + 1, group, groups, value_marker, visited_marker)
-    #     self.dfs(matrix, i, j - 1, group, groups, value_marker, visited_marker)
-    #     self.dfs(matrix, i + 1, j + 1, group, groups, value_marker, visited_marker)
-    #     self.dfs(matrix, i - 1, j - 1, group, groups, value_marker, visited_marker)
-    #     self.dfs(matrix, i - 1, j + 1, group, groups, value_marker, visited_marker)
-    #     self.dfs(matrix, i + 1, j - 1, group, groups, value_marker, visited_marker)
-
-    #     return group + 1
     
     def dfs(self, 
             matrix: list[list[float]],
@@ -399,10 +395,27 @@ class BoundaryExploration(Node):
             group: int,
             groups: dict[int, list[tuple[int, int]]],
             value_marker: int,
-            visited_marker: int
+            visited_marker: int,
+            directions: list[tuple[int, int]] # Directions (8-connected grid)
         ) -> int:
-        # Directions (8-connected grid)
-        directions = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,-1),(-1,1),(1,-1)]
+        """_summary_
+
+        Args:
+            matrix (list[list[float]]): _description_
+            i (int): _description_
+            j (int): _description_
+            group (int): _description_
+            groups (dict[int, list[tuple[int, int]]]): _description_
+            value_marker (int): _description_
+            visited_marker (int): _description_
+            directions (list[tuple[int, int]], optional): _description_. Defaults to [(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,-1),(-1,1),(1,-1)]#Directions(8-connected grid).
+
+        Returns:
+            int: _description_
+            
+        Comments:
+            directions can be modified to change connectivity (4-connected, 8-connected, etc.) or increase search radius due to some usage cases like noise in map or missing connections in diagonal directions
+        """
 
         # Use stack for iterative DFS
         stack = [(i, j)]
@@ -456,6 +469,7 @@ class BoundaryExploration(Node):
         return False
 
     def findClosestGroup(self, 
+        map_occupancy_data: list[int],
         matrix: list[float],
         groups: list[tuple[int, list[tuple[int, int]]]],
         current: tuple[int],
@@ -464,8 +478,11 @@ class BoundaryExploration(Node):
         originY: float) -> list[tuple[float,float]] | None:
         
         targetP = None
-        _, obstacle_groups = self.assign_groups(matrix.copy(), VAL_OCCUPIED_MATRIX, -999)  # -999 to mark visited
+
+        _, obstacle_groups = self.assign_groups(map_occupancy_data, VAL_OCCUPIED, -128, self.directions_generator(3))  # -999 to mark visited
         largest_obstacle = max(obstacle_groups.items(), key=lambda x: len(x[1]))[1] if obstacle_groups else []
+        self.largest_obstacle = largest_obstacle
+        
         print(f"[INFO] LARGEST OBSTACLE SIZE: {len(largest_obstacle)}, CELLS")
         for gid, obs in obstacle_groups.items():
             print(f"[INFO] OBSTACLE GROUP {gid} SIZE: {len(obs)} CELLS")
@@ -534,25 +551,28 @@ class BoundaryExploration(Node):
         originY: float):
 
         global pathGlobal
-        map_occupancy_data = self.costmap(
+        matrix = self.costmap(
             map_occupancy_data,
             width,
             height,
             resolution)
-        map_occupancy_data[row][column] = 0
-        map_occupancy_data[map_occupancy_data > 5] = VAL_OCCUPIED_MATRIX
-        map_occupancy_data = self.frontierB(map_occupancy_data)
-        map_occupancy_data, groups = self.assign_groups(map_occupancy_data, VAL_FRONTIER, 0)
+        matrix[row][column] = 0
+        matrix[matrix > 5] = VAL_OCCUPIED_MATRIX
+        matrix = self.frontierB(matrix)
+        matrix, groups = self.assign_groups(matrix, VAL_FRONTIER, 0)
         
         groups = self.fGroups(groups)
         self.last_frontier_groups = groups
         
+        map_occupancy_data = np.array(map_occupancy_data).reshape(height,width)
+        
         if len(groups) == 0:
             path = -1
         else:
-            map_occupancy_data[map_occupancy_data < 0] = 1
+            matrix[matrix < 0] = 1
             path = self.findClosestGroup(
                 map_occupancy_data,
+                matrix,
                 groups,
                 (row,column),
                 resolution,
@@ -596,6 +616,11 @@ class BoundaryExploration(Node):
             # Mark next goal
             if hasattr(self, 'c') and hasattr(self, 'r'):
                 dumped_map[self.r][self.c] = VAL_NEXT_GOAL
+                
+            # Mark largest obstacle
+            if hasattr(self, 'largest_obstacle') and self.largest_obstacle:
+                for (ox, oy) in self.largest_obstacle:
+                    dumped_map[ox][oy] = VAL_LARGEST_OBSTACLE
 
             # Update map data
             self.latest_map.data = dumped_map.flatten().tolist()
