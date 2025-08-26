@@ -97,6 +97,9 @@ class BoundaryExploration(Node):
         self.last_frontier_groups: dict[int, list[tuple[int, int]]] = {}
         self.largest_obstacle: list[tuple[int, int]] = []
         
+        # Flag to pick second-best frontier right after reaching a goal frontier
+        self.just_reached_goal: bool = False
+        
     def exp(self):
         twist = Twist()
         
@@ -147,6 +150,8 @@ class BoundaryExploration(Node):
                 if(abs(self.x - self.path[-1][0]) < target_error and abs(self.y - self.path[-1][1]) < target_error):
                     v = 0.0
                     w = 0.0
+                    # Mark that we just reached a goal; next selection should pick second-best
+                    self.just_reached_goal = True
                     self.target = True
                     print("[INFO] GOAL REACHED")
                     self.t.join()
@@ -334,7 +339,6 @@ class BoundaryExploration(Node):
 
     # -------------------- FRONTIER DETECTION --------------------
     def frontierB(self, matrix: list[float]) -> list[float]:
-        matrix_values = set(matrix.flatten())
         for i in range(len(matrix)):
             for j in range(len(matrix[i])):
                 if matrix[i][j] == 0.0:
@@ -349,9 +353,6 @@ class BoundaryExploration(Node):
                                 has_occupied = True
                     if has_unknown and has_occupied:
                         matrix[i][j] = 2
-                        # print("[INFO] FRONTIER DETECTED AT", (i, j))
-        # print(matrix)
-        print(matrix_values)
         return matrix
 
     # -------------------- GROUPING --------------------
@@ -457,7 +458,7 @@ class BoundaryExploration(Node):
     def frontierTouchesObstacle(self, frontier_group: list[tuple[int, int]], obstacle_group: list[tuple[int, int]]):
         if not obstacle_group:
             return False
-        threshold = 1.5 * robot_r / resolution  # convert robot radius to grid units
+        threshold = 3 * robot_r / resolution  # convert robot radius to grid units
         obstacle_set = set(obstacle_group)
 
         for fx, fy in frontier_group:
@@ -483,26 +484,42 @@ class BoundaryExploration(Node):
         largest_obstacle = max(obstacle_groups.items(), key=lambda x: len(x[1]))[1] if obstacle_groups else []
         self.largest_obstacle = largest_obstacle
         
-        print(f"[INFO] LARGEST OBSTACLE SIZE: {len(largest_obstacle)}, CELLS")
-        for gid, obs in obstacle_groups.items():
-            print(f"[INFO] OBSTACLE GROUP {gid} SIZE: {len(obs)} CELLS")
-            # if len(obs) > len(largest_obstacle):
-            #     largest_obstacle = obs
-        # print(f"[INFO] LARGEST OBSTACLE SIZE: {len(largest_obstacle)} CELLS; {largest_obstacle}")
-        chosen_group = None
-
+        # Build ranked candidate list (frontiers that touch the largest obstacle), by ascending distance
+        candidates = []
         for gid, frontier_group in groups:
             if self.frontierTouchesObstacle(frontier_group, largest_obstacle):
-                chosen_group = frontier_group
-                print(f"[INFO] CHOSEN GROUP {gid} IS WITHIN {1.5*robot_r/resolution:.2f} CELLS OF LARGEST OBSTACLE; {len(chosen_group)}")
-                break
+                centroid = self.calculate_centroid([p[0] for p in frontier_group], [p[1] for p in frontier_group])
+                dist = self.heuristic(current, centroid)
+                candidates.append((dist, centroid, frontier_group))
+        candidates.sort(key=lambda x: x[0])
 
-        if not chosen_group and groups:
-            print("[INFO] NO GROUP TOUCHES OBSTACLE, CHOOSING LARGEST GROUP")
-            chosen_group = groups[0][1]  # fallback: biggest frontier
+        chosen_group = None
+        chosen_centroid = None
+
+        if candidates:
+            # Default to best (closest) candidate
+            idx = 0
+            # If we just reached a goal frontier, pick second-best when available
+            if self.just_reached_goal and len(candidates) >= 2:
+                idx = 1
+            chosen_group = candidates[idx][2]
+            chosen_centroid = candidates[idx][1]
+            # Reset the flag after using it
+            self.just_reached_goal = False
+            print(f"[INFO] CHOSEN GROUP IS WITHIN {3*robot_r/resolution:.2f} CELLS OF LARGEST OBSTACLE; {len(chosen_group) if chosen_group else 0} CELLS (rank idx={idx})")
+        else:
+            # Fallback: choose by size (already sorted in fGroups), allow second-best if flag is set
+            if groups:
+                idx = 0
+                if self.just_reached_goal and len(groups) >= 2:
+                    idx = 1
+                chosen_group = groups[idx][1]
+                # Reset the flag after using it
+                self.just_reached_goal = False
+                print(f"[INFO] NO GROUP TOUCHES OBSTACLE, CHOOSING {'SECOND' if idx==1 else 'LARGEST'} GROUP")
 
         if chosen_group:
-            middle = self.calculate_centroid([p[0] for p in chosen_group], [p[1] for p in chosen_group]) 
+            middle = chosen_centroid if chosen_centroid is not None else self.calculate_centroid([p[0] for p in chosen_group], [p[1] for p in chosen_group])
             path = self.astar(matrix, current, middle)
             # if not path:  # If uncommented finishes the exploration too early
             #     print("[INFO] NO PATH FOUND")
