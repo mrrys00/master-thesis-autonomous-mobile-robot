@@ -8,6 +8,7 @@ import heapq, math, random, yaml
 import scipy.interpolate as si
 import sys, threading, time
 
+from collections import deque
 import os
 import json
 from datetime import datetime
@@ -455,18 +456,26 @@ class BoundaryExploration(Node):
         n = len(x_coords)
         return (int(sum(x_coords) / n), int(sum(y_coords) / n))
 
-    def frontierTouchesObstacle(self, frontier_group: list[tuple[int, int]], obstacle_group: list[tuple[int, int]]):
+    def frontier_touches_boundary(
+        self,
+        frontier_group: list[tuple[int, int]],
+        obstacle_group: list[tuple[int, int]]
+    ) -> bool:
         if not obstacle_group:
             return False
-        threshold = 3 * robot_r / resolution  # convert robot radius to grid units
-        obstacle_set = set(obstacle_group)
+
+        threshold = 3 * robot_r / resolution  # in grid cells
+        min_dist = float('inf')
 
         for fx, fy in frontier_group:
-            for ox, oy in obstacle_set:
+            for ox, oy in obstacle_group:
                 dist = math.hypot(fx - ox, fy - oy)
-                # print("fx, fy, ox, oy, dist", fx, fy, ox, oy, dist)
-                if dist <= threshold:
-                    return True
+                if dist < min_dist:
+                    min_dist = dist
+                    if min_dist <= threshold:
+                        return True  # early exit
+
+        # If after scanning all cells min_dist is still greater → too far
         return False
 
     def findClosestGroup(self, 
@@ -487,7 +496,7 @@ class BoundaryExploration(Node):
         # Build ranked candidate list (frontiers that touch the largest obstacle), by ascending distance
         candidates = []
         for gid, frontier_group in groups:
-            if self.frontierTouchesObstacle(frontier_group, largest_obstacle):
+            if self.frontier_touches_boundary(frontier_group, largest_obstacle):
                 centroid = self.calculate_centroid([p[0] for p in frontier_group], [p[1] for p in frontier_group])
                 dist = self.heuristic(current, centroid)
                 candidates.append((dist, centroid, frontier_group))
@@ -619,7 +628,20 @@ class BoundaryExploration(Node):
                     w = math.pi/4
                     break
         return v,w
+    
+    # -------------------- FULLY ENCLOSURE --------------------
+    def is_fully_enclosed(
+        self,
+        grid: np.ndarray,
+        position: tuple[int, int],
+        free_val: int = VAL_FREE,
+        occupied_val: int = VAL_OCCUPIED,
+        unknown_val: int = VAL_UNKNOWN
+    ) -> bool:
+        # TODO implement
+        return False
 
+    # -------------------- MAP DUMP --------------------
     def mark_frontiers_and_goal_on_dump_map(self):  # Mark frontiers and next goal in latest map copy
         if MAP_DUMP and self.latest_map:
             dumped_map = np.array(self.latest_map.data).reshape(self.height, self.width)
