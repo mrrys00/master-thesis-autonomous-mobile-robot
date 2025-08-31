@@ -201,3 +201,7 @@ run_node_autonomous_exploration:
 run_node_time_predictor:
 	$(MAKE) run_reminder
 	ros2 run time_predictor time_predictor
+
+run_node_boundary_exploration:
+	$(MAKE) run_reminder
+	ros2 run exploration_algorithm boundary_exploration_node ---ros-args --params-file src/config/exploration/params.yaml

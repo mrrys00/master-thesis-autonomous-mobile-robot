@@ -1,5 +1,11 @@
-lookahead_distance : 0.24
-speed : 0.18
-expansion_size : 4
-target_error : 0.15
-robot_r : 0.2
+boundary_finder_node:
+  ros__parameters:
+    lookahead_distance : 0.26
+    speed : 0.18
+    expansion_size : 4
+    target_error : 0.15
+    robot_r : 0.25
+    resolution : 0.05
+    map_dump : True
+    output_directory : 'messages'
+    log_level : 'DEBUG'
