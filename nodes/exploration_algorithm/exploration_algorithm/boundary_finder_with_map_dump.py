@@ -9,6 +9,7 @@ import scipy.interpolate as si
 import sys, threading, time
 
 from collections import deque
+from scipy import ndimage
 import os
 import json
 from datetime import datetime
@@ -100,6 +101,8 @@ class BoundaryExploration(Node):
         
         # Flag to pick second-best frontier right after reaching a goal frontier
         self.just_reached_goal: bool = False
+        
+        self.stop_exploration: bool = False
         
     def exp(self):
         twist = Twist()
@@ -577,13 +580,21 @@ class BoundaryExploration(Node):
         originY: float):
 
         global pathGlobal
+        
+        raw_grid = np.array(map_occupancy_data).reshape(height, width)
+        self.get_logger().debug(f"is_fully_enclosed: checking at robot grid {(row, column)}")
+        if self.is_fully_enclosed(raw_grid, (row, column)):
+            print("[INFO] AREA FULLY ENCLOSED → exploration finished")
+            pathGlobal = -1
+            return
+
         matrix = self.costmap(
             map_occupancy_data,
             width,
             height,
             resolution)
         matrix[row][column] = 0
-        matrix[matrix > 5] = VAL_OCCUPIED_MATRIX
+        matrix[matrix >= VAL_OCCUPIED*resolution] = VAL_OCCUPIED_MATRIX
         matrix = self.frontierB(matrix)
         matrix, groups = self.assign_groups(matrix, VAL_FRONTIER, 0)
         
@@ -630,16 +641,91 @@ class BoundaryExploration(Node):
         return v,w
     
     # -------------------- FULLY ENCLOSURE --------------------
-    def is_fully_enclosed(
-        self,
-        grid: np.ndarray,
-        position: tuple[int, int],
-        free_val: int = VAL_FREE,
-        occupied_val: int = VAL_OCCUPIED,
-        unknown_val: int = VAL_UNKNOWN
-    ) -> bool:
-        # TODO implement
-        return False
+    def _disk_structure(self, radius_pixels: int) -> np.ndarray:
+        """Create a binary disk (structuring element) with given radius in pixels."""
+        L = 2 * radius_pixels + 1
+        cy = cx = radius_pixels
+        y, x = np.ogrid[:L, :L]
+        mask = (x - cx) ** 2 + (y - cy) ** 2 <= radius_pixels ** 2
+        return mask
+
+    def is_fully_enclosed(self, raw_grid: np.ndarray, position: tuple[int, int]) -> bool:
+        """
+        Return True iff the robot cannot escape to the map border when obstacles are
+        inflated by the robot radius. The test considers enclosure purely by obstacles
+        (UNKNOWN cells are not treated as obstacles for this geometric test).
+        - raw_grid: 2D numpy array of the original occupancy grid (values -1,0,100,...).
+        - position: (row, col) of robot in grid coordinates.
+        """
+        # sanity
+        if raw_grid is None or raw_grid.size == 0:
+            return False
+
+        h, w = raw_grid.shape
+        r0, c0 = position
+        if not (0 <= r0 < h and 0 <= c0 < w):
+            return False
+
+        occupancy = (raw_grid >= VAL_OCCUPIED)
+
+        r_pix = max(0, int(math.ceil(robot_r / self.resolution)))
+
+        # Build disk structuring element and dilate obstacle mask
+        if r_pix > 0:
+            structure = self._disk_structure(r_pix)
+            occupancy_dilated = ndimage.binary_dilation(occupancy, structure=structure)
+        else:
+            occupancy_dilated = occupancy.copy()
+
+        # free_eroded: True where center of robot can be placed (i.e. not inside inflated obstacles)
+        free_eroded = ~occupancy_dilated
+
+        # If robot is inside the inflated obstacle band, try to find a nearby start cell within a small neighborhood (search radius = max(1, r_pix)). If not found, avoid declaring enclosed (conservative).
+        start_r, start_c = r0, c0
+        if not free_eroded[start_r, start_c]:
+            search_px = max(1, r_pix)
+            found = False
+            for dr in range(-search_px, search_px + 1):
+                for dc in range(-search_px, search_px + 1):
+                    nr, nc = r0 + dr, c0 + dc
+                    if 0 <= nr < h and 0 <= nc < w and free_eroded[nr, nc]:
+                        start_r, start_c = nr, nc
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                # Conservative choice: if robot center is inside the inflated obstacle band AND
+                # there is no nearby placement for the center, we *do not* declare enclosed
+                # immediately (this prevents false positives); caller can decide to treat
+                # this case differently. Return False to continue exploration.
+                # Log for debugging:
+                self.get_logger().debug(
+                    f"is_fully_enclosed: robot center inside inflated obstacle area; "
+                    f"no nearby free cell (r_pix={r_pix}) — treating as NOT enclosed")
+                return False
+
+        # BFS over free_eroded (8-connected), if we can reach the map border -> NOT enclosed
+        visited = np.zeros_like(free_eroded, dtype=bool)
+        q = deque()
+        q.append((start_r, start_c))
+        visited[start_r, start_c] = True
+        directions = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]
+
+        while q:
+            x, y = q.popleft()
+            # If any reachable cell touches the map edge -> the robot can escape
+            if x == 0 or y == 0 or x == h - 1 or y == w - 1:
+                return False
+            for dx, dy in directions:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < h and 0 <= ny < w and not visited[nx, ny] and free_eroded[nx, ny]:
+                    visited[nx, ny] = True
+                    q.append((nx, ny))
+
+        # BFS finished without reaching border -> enclosed
+        return True
+
 
     # -------------------- MAP DUMP --------------------
     def mark_frontiers_and_goal_on_dump_map(self):  # Mark frontiers and next goal in latest map copy
