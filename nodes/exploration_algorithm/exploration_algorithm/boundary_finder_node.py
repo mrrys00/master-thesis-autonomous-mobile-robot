@@ -164,12 +164,12 @@ class BoundaryExploration(Node):
                 
                 self.mark_frontiers_and_goal_on_dump_map()
                 
-                t = self.pathLength(self.path)/self.speed
+                t = self.path_length(self.path)/self.speed
                 t = t - 0.2
                 self.t = threading.Timer(t, self.target_callback)
                 self.t.start()
             else:
-                v , w = self.localControl(self.scan)
+                v , w = self.local_control(self.scan)
                 if v == None:
                     v, w, self.i = self.pure_pursuit(
                         self.x,
@@ -446,7 +446,7 @@ class BoundaryExploration(Node):
         return v,desired_steering_angle,index
 
     # -------------------- FRONTIER DETECTION --------------------
-    def frontierB(self, matrix: list[float]) -> list[float]:
+    def frontier_b(self, matrix: list[float]) -> list[float]:
         """
         Detect frontiers in the occupancy grid.
 
@@ -576,7 +576,7 @@ class BoundaryExploration(Node):
         return group + 1
 
     # -------------------- FRONTIER SELECTION --------------------
-    def fGroups(self, groups: dict[int, list[tuple[int, int]]]) -> list[tuple[int, list[tuple[int, int]]]]:
+    def f_groups(self, groups: dict[int, list[tuple[int, int]]]) -> list[tuple[int, list[tuple[int, int]]]]:
         """
         Rank frontier groups by size (largest first).
 
@@ -635,7 +635,7 @@ class BoundaryExploration(Node):
         # If after scanning all cells min_dist is still greater → too far
         return False
 
-    def findClosestGroup(self, 
+    def find_closest_group(self, 
         map_occupancy_data: list[int],
         matrix: list[float],
         groups: list[tuple[int, list[tuple[int, int]]]],
@@ -708,7 +708,7 @@ class BoundaryExploration(Node):
         return targetP
 
     # -------------------- COSTMAP + EXPLORATION --------------------
-    def pathLength(self, path: list[tuple[float,float]]) -> float:
+    def path_length(self, path: list[tuple[float,float]]) -> float:
         """
         Calculate the length of a path.
 
@@ -795,10 +795,10 @@ class BoundaryExploration(Node):
             self.resolution)
         matrix[row][column] = 0
         matrix[matrix >= VAL_OCCUPIED*self.resolution] = VAL_OCCUPIED_MATRIX
-        matrix = self.frontierB(matrix)
+        matrix = self.frontier_b(matrix)
         matrix, groups = self.assign_groups(matrix, VAL_FRONTIER, 0)
         
-        groups = self.fGroups(groups)
+        groups = self.f_groups(groups)
         self.last_frontier_groups = groups
         
         map_occupancy_data = np.array(map_occupancy_data).reshape(height,width)
@@ -807,7 +807,7 @@ class BoundaryExploration(Node):
             path = -1
         else:
             matrix[matrix < 0] = 1
-            path = self.findClosestGroup(
+            path = self.find_closest_group(
                 map_occupancy_data,
                 matrix,
                 groups,
@@ -824,7 +824,7 @@ class BoundaryExploration(Node):
         return
 
     # -------------------- LOCAL CONTROL --------------------
-    def localControl(self, scan: list[tuple[float, float]]) -> tuple[float,float | None,None]:
+    def local_control(self, scan: list[tuple[float, float]]) -> tuple[float,float | None,None]:
         """
         Simple reactive obstacle avoidance based on laser scan data.
 
