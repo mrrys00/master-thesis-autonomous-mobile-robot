@@ -9,3 +9,4 @@ boundary_finder_node:
     map_dump : True
     output_directory : 'messages'
     log_level : 'DEBUG'
+    laser_max_range : 1.0
