@@ -389,6 +389,7 @@ class AreaExploration(Node):
             self.path_idx = 0
 
         # Save overlays for dumping
+        print(f"Planned {len(future_targets)} exploration goals, path length {len(self.path_world)}")
         self.future_targets = future_targets
         if future_targets:
             self.next_target_rc = future_targets[0][0]
@@ -469,6 +470,8 @@ class AreaExploration(Node):
             if self.path_world and self.path_idx < len(self.path_world):
                 # Local obstacle check from laser; if close obstacle, turn away
                 v_cmd, w_cmd = self.local_control(self.scan_msg.ranges if self.scan_msg else None)
+                # v_cmd, w_cmd = self.local_control(self.scan_msg)
+                
                 if v_cmd is None:
                     v_cmd, w_cmd, self.path_idx = self.pure_pursuit(self.x, self.y, self.yaw, self.path_world, self.path_idx)
                 twist.linear.x = v_cmd
@@ -514,24 +517,40 @@ class AreaExploration(Node):
             v = 0.0
         return v, steer, index
 
-    def local_control(self, scan_ranges) -> tuple[float | None, float | None]:
-        if scan_ranges is None:
-            return None, None
-        # Simple reactive: if obstacle in ±30° very close, turn away
-        n = len(scan_ranges)
-        if n == 0:
-            return None, None
-        # 360 samples assumed; guard if different
-        left_indices = range((n*5)//12, (n*7)//12)  # approx +75..+105 deg
-        right_indices = range((n*5)//12 - (n//6), (n*7)//12 - (n//6))  # approx -105..-75 deg
-        # center ±30 deg
-        center_lo = (n*5)//12 - (n//12)
-        center_hi = (n*7)//12 + (n//12)
-        min_front = min([scan_ranges[i] for i in range(center_lo, min(center_hi, n)) if not math.isinf(scan_ranges[i])], default=float('inf'))
-        if min_front < self.robot_r:
-            # turn away
-            return 0.2, -math.pi/4
-        return None, None
+    # def local_control(self, scan_ranges) -> tuple[float | None, float | None]:
+    #     if scan_ranges is None:
+    #         return None, None
+    #     # Simple reactive: if obstacle in ±30° very close, turn away
+    #     n = len(scan_ranges)
+    #     if n == 0:
+    #         return None, None
+    #     # 360 samples assumed; guard if different
+    #     left_indices = range((n*5)//12, (n*7)//12)  # approx +75..+105 deg
+    #     right_indices = range((n*5)//12 - (n//6), (n*7)//12 - (n//6))  # approx -105..-75 deg
+    #     # center ±30 deg
+    #     center_lo = (n*5)//12 - (n//12)
+    #     center_hi = (n*7)//12 + (n//12)
+    #     min_front = min([scan_ranges[i] for i in range(center_lo, min(center_hi, n)) if not math.isinf(scan_ranges[i])], default=float('inf'))
+    #     if min_front < self.robot_r:
+    #         # turn away
+    #         return 0.2, -math.pi/4
+    #     return None, None
+    
+    def local_control(self, scan) -> tuple[float | None, float | None]:
+        v = None
+        w = None
+        for i in range(60):
+            if scan[i] < self.robot_r:
+                v = 0.2
+                w = -math.pi/4 
+                break
+        if v == None:
+            for i in range(300,360):
+                if scan[i] < self.robot_r:
+                    v = 0.2
+                    w = math.pi/4
+                    break
+        return v,w
 
     # ==================== Utilities ====================
 
@@ -580,10 +599,10 @@ class AreaExploration(Node):
                 code_target = DUMP_TARGET_BASE + i  # 20..29
                 code_view = DUMP_VIEW_BASE + i      # 30..39
                 tr, tc = trc
-                if 0 <= tr < self.height and 0 <= tc < self.width:
+                if 0 <= tr < self.height and 0 <= tc < self.width and dumped[vr, vc] == VAL_UNKNOWN:
                     dumped[tr, tc] = code_target
                 for (vr, vc) in vis_set:
-                    if 0 <= vr < self.height and 0 <= vc < self.width:
+                    if 0 <= vr < self.height and 0 <= vc < self.width and dumped[vr, vc] == VAL_UNKNOWN:
                         dumped[vr, vc] = code_view
         else:
             # Legacy single-target overlay using dump_cycle
@@ -592,11 +611,11 @@ class AreaExploration(Node):
                 code_view = DUMP_VIEW_BASE + self.dump_cycle      # 30..39
 
                 tr, tc = self.next_target_rc
-                if 0 <= tr < self.height and 0 <= tc < self.width:
+                if 0 <= tr < self.height and 0 <= tc < self.width and dumped[vr, vc] == VAL_UNKNOWN:
                     dumped[tr, tc] = code_target
 
                 for (vr, vc) in self.view_cells_for_dump:
-                    if 0 <= vr < self.height and 0 <= vc < self.width:
+                    if 0 <= vr < self.height and 0 <= vc < self.width and dumped[vr, vc] == VAL_UNKNOWN:
                         dumped[vr, vc] = code_view
 
         # Save JSON with overlays
