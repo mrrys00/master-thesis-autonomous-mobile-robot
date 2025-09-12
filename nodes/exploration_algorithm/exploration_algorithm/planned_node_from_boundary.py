@@ -115,7 +115,7 @@ class BoundaryExploration(Node):
         self.t: threading.Timer
         
         self.last_frontier_groups: dict[int, list[tuple[int, int]]] = {}
-        # self.largest_obstacle: list[tuple[int, int]] = []
+        self.largest_obstacle: list[tuple[int, int]] = []
         
         self.just_reached_goal: bool = False
         
@@ -456,20 +456,19 @@ class BoundaryExploration(Node):
         Returns:
             list[float]: Matrix with frontiers marked.
         """
-        for i in range(len(matrix)):
-            for j in range(len(matrix[i])):
-                if matrix[i][j] == 0.0:
+        h, w = len(matrix), len(matrix[0])
+        for i in range(h):
+            for j in range(w):
+                if matrix[i][j] == 0.0:  # free
                     has_unknown = False
-                    has_occupied = False
                     for dx, dy in [(1,0),(-1,0),(0,1),(0,-1)]:
-                        ni, nj = i+dx, j+dy
-                        if 0 <= ni < len(matrix) and 0 <= nj < len(matrix[0]):
-                            if matrix[ni][nj] < 0:
+                        ni, nj = i + dx, j + dy
+                        if 0 <= ni < h and 0 <= nj < w:
+                            if matrix[ni][nj] < 0:  # unknown
                                 has_unknown = True
-                            if matrix[ni][nj] == VAL_OCCUPIED_MATRIX:
-                                has_occupied = True
-                    if has_unknown and has_occupied:
-                        matrix[i][j] = 2
+                                break
+                    if has_unknown:
+                        matrix[i][j] = VAL_FRONTIER
         return matrix
 
     # -------------------- GROUPING --------------------
@@ -603,109 +602,70 @@ class BoundaryExploration(Node):
         n = len(x_coords)
         return (int(sum(x_coords) / n), int(sum(y_coords) / n))
 
-    # def frontier_touches_boundary(
-    #     self,
-    #     frontier_group: list[tuple[int, int]],
-    #     obstacle_group: list[tuple[int, int]]
-    # ) -> bool:
-    #     """
-    #     Check if any cell in the frontier group is within a threshold distance
-
-    #     Args:
-    #         frontier_group (list[tuple[int, int]]): _description_
-    #         obstacle_group (list[tuple[int, int]]): _description_
-
-    #     Returns:
-    #         bool: True if any cell in frontier_group is within threshold distance of any cell in obstacle_group, False otherwise.
-    #     """
-    #     if not obstacle_group:
-    #         return False
-
-    #     threshold = 3 * self.robot_r / self.resolution  # in grid cells
-    #     min_dist = float('inf')
-
-    #     for fx, fy in frontier_group:
-    #         for ox, oy in obstacle_group:
-    #             dist = math.hypot(fx - ox, fy - oy)
-    #             if dist < min_dist:
-    #                 min_dist = dist
-    #                 if min_dist <= threshold:
-    #                     return True  # early exit
-
-    #     # If after scanning all cells min_dist is still greater → too far
-    #     return False
-
-    def find_closest_group(self, 
-        map_occupancy_data: list[int],
+    def find_closest_group(
+        self,
         matrix: list[float],
         groups: list[tuple[int, list[tuple[int, int]]]],
-        current: tuple[int],
+        current: tuple[int, int],
+        inflated_obstacle_cells: np.ndarray,
         resolution: float,
         originX: float,
-        originY: float) -> list[tuple[float,float]] | None:
+        originY: float
+    ) -> list[tuple[float, float]] | None:
         """
-        Select the best frontier group and plan path to its centroid.
-
-        Args:
-            map_occupancy_data (list[int]): _description_
-            matrix (list[float]): _description_
-            groups (list[tuple[int, list[tuple[int, int]]]]): _description_
-            current (tuple[int]): _description_
-            resolution (float): _description_
-            originX (float): _description_
-            originY (float): _description_
-
-        Returns:
-            list[tuple[float,float]] | None: Path to the chosen group's centroid or None if no path found.
+        Pick a safe frontier group (≥1.5*robot_r from obstacles).
+        Normally choose nearest, but if it's within target_error of the robot,
+        pick the farthest safe frontier instead.
         """
-        
-        targetP = None
+        safe_threshold_cells = (1.5 * self.robot_r) / resolution
+        target_error_cells = self.target_error / resolution
 
-        # _, obstacle_groups = self.assign_groups(map_occupancy_data, VAL_OCCUPIED, -128, self.directions_generator(3))
-        # largest_obstacle = max(obstacle_groups.items(), key=lambda x: len(x[1]))[1] if obstacle_groups else []
-        # self.largest_obstacle = largest_obstacle
-        
-        # Build ranked candidate list (frontiers that touch the largest obstacle), by ascending distance
-        # candidates = []
-        # for gid, frontier_group in groups:
-        #     if self.frontier_touches_boundary(frontier_group, largest_obstacle):
-        #         centroid = self.calculate_centroid([p[0] for p in frontier_group], [p[1] for p in frontier_group])
-        #         dist = self.heuristic(current, centroid)
-        #         candidates.append((dist, centroid, frontier_group))
-        # candidates.sort(key=lambda x: x[0])
+        # If there are no obstacles at all, every frontier is "safe"
+        has_obstacles = inflated_obstacle_cells.size > 0
 
-        chosen_group = None
-        chosen_centroid = None
+        candidates = []
+        for gid, frontier_group in groups:
+            # --- safety check: min distance to inflated obstacles ---
+            if has_obstacles:
+                min_dist = float('inf')
+                for fx, fy in frontier_group:
+                    d = np.min(np.hypot(
+                        inflated_obstacle_cells[:, 0] - fx,
+                        inflated_obstacle_cells[:, 1] - fy
+                    ))
+                    if d < min_dist:
+                        min_dist = d
+            else:
+                min_dist = float('inf')
 
-        # if candidates:
-        #     # Default to best (closest) candidate
-        #     idx = 0
-        #     # If we just reached a goal frontier, pick second-best when available
-        #     if self.just_reached_goal and len(candidates) >= 2:
-        #         idx = 1
-        #     chosen_group = candidates[idx][2]
-        #     chosen_centroid = candidates[idx][1]
-        #     # Reset the flag after using it
-        #     self.just_reached_goal = False
-        #     self.get_logger().info(f"Chosen group within {3*self.robot_r/self.resolution:.2f} cells of largest obstacle; {len(chosen_group) if chosen_group else 0} cells (rank idx={idx})")
-        # else:
-            # Fallback: choose by size (already sorted in fGroups), allow second-best if flag is set
-        if groups:
-            idx = 0
-            if self.just_reached_goal and len(groups) >= 2:
-                idx = 1
-            chosen_group = groups[idx][1]
-            # Reset the flag after using it
-            self.just_reached_goal = False
-            self.get_logger().info(f"No group close enough to the largest obstacle, choosing {'2nd' if idx==1 else 'largest'} group")
+            if min_dist >= safe_threshold_cells:
+                cx, cy = self.calculate_centroid(
+                    [p[0] for p in frontier_group],
+                    [p[1] for p in frontier_group]
+                )
+                dist_to_robot = self.heuristic(current, (cx, cy))
+                candidates.append((dist_to_robot, (cx, cy)))
 
-        if chosen_group:
-            middle = chosen_centroid if chosen_centroid is not None else self.calculate_centroid([p[0] for p in chosen_group], [p[1] for p in chosen_group])
-            path = self.astar(matrix, current, middle)
-            path = [(p[1]*self.resolution+originX,p[0]*self.resolution+originY) for p in path]
-            targetP = path
+        if not candidates:
+            return None
 
-        return targetP
+        # --- if nearest is too close, choose farthest instead ---
+        candidates.sort(key=lambda x: x[0])  # sort ascending
+        nearest_dist = candidates[0][0]
+        if nearest_dist <= target_error_cells:
+            # choose the farthest safe frontier instead
+            candidates.sort(key=lambda x: x[0], reverse=True)
+
+        goal_rc = candidates[0][1]
+
+        # --- plan A* path ---
+        path_rc = self.astar(matrix, current, goal_rc)
+        if not path_rc:
+            return None
+
+        # grid → world
+        path_xy = [(c * resolution + originX, r * resolution + originY) for (r, c) in path_rc]
+        return path_xy
 
     # -------------------- COSTMAP + EXPLORATION --------------------
     def path_length(self, path: list[tuple[float,float]]) -> float:
@@ -780,47 +740,55 @@ class BoundaryExploration(Node):
         """
 
         global pathGlobal
-        
-        raw_grid = np.array(map_occupancy_data).reshape(height, width)
-        self.get_logger().debug(f"is_fully_enclosed: checking at robot grid {(row, column)}")
-        if self.is_fully_enclosed(raw_grid, (row, column)):
-            self.get_logger().info("The area is fully enclosed → exploration finished")
-            pathGlobal = -1
-            return
 
+        # --- 1) build costmap & mark obstacles (inflated) ---
         matrix = self.costmap(
             map_occupancy_data,
             width,
             height,
-            self.resolution)
-        matrix[row][column] = 0
-        matrix[matrix >= VAL_OCCUPIED*self.resolution] = VAL_OCCUPIED_MATRIX
+            self.resolution
+        )
+        matrix[row][column] = 0  # ensure start cell is free for A*
+        matrix[matrix >= VAL_OCCUPIED * self.resolution] = VAL_OCCUPIED_MATRIX  # 1 where inflated obstacles
+
+        # capture inflated obstacle cells BEFORE frontier marking/zeroing
+        inflated_obstacle_cells = np.argwhere(matrix == VAL_OCCUPIED_MATRIX)
+
+        # --- 2) detect frontiers (free next to unknown) & group them ---
         matrix = self.frontier_b(matrix)
         matrix, groups = self.assign_groups(matrix, VAL_FRONTIER, 0)
-        
         groups = self.f_groups(groups)
         self.last_frontier_groups = groups
-        
-        map_occupancy_data = np.array(map_occupancy_data).reshape(height,width)
-        
+
+        # --- 3) early exit if no frontiers at all ---
         if len(groups) == 0:
+            self.get_logger().info("No frontier groups found — exploration complete.")
             path = -1
         else:
-            matrix[matrix < 0] = 1
+            # For A*: treat unknown as blocked, keep free/frontier as passable
+            mat_for_astar = matrix.copy()
+            mat_for_astar[mat_for_astar < 0] = 1  # unknown → blocked
+
+            # --- 4) pick nearest SAFE frontier (≥ 1.5*robot_r from inflated obstacles) ---
             path = self.find_closest_group(
-                map_occupancy_data,
-                matrix,
+                mat_for_astar,
                 groups,
-                (row,column),
+                (row, column),
+                inflated_obstacle_cells,   # pass inflated obstacle cells
                 self.resolution,
                 originX,
-                originY)
-            if path != None:
-                path = self.bspline_planning(path, len(path)*5)
-            else:
+                originY
+            )
+
+            # if nothing safe or path planning failed → finish
+            if path is None:
+                self.get_logger().info("No safe frontiers available — exploration complete.")
                 path = -1
+            else:
+                # optional smoothing
+                path = self.bspline_planning(path, len(path) * 5)
+
         pathGlobal = path
-        
         return
 
     # -------------------- LOCAL CONTROL --------------------
@@ -848,98 +816,6 @@ class BoundaryExploration(Node):
                     w = math.pi/4
                     break
         return v,w
-    
-    # -------------------- FULLY ENCLOSURE --------------------
-    def _disk_structure(self, radius_pixels: int) -> np.ndarray:
-        """
-        Create a disk-shaped structuring element for morphological operations.
-
-        Args:
-            radius_pixels (int): Radius of the disk in pixels.
-
-        Returns:
-            np.ndarray: 2D boolean array representing the disk.
-        """
-        L = 2 * radius_pixels + 1
-        cy = cx = radius_pixels
-        y, x = np.ogrid[:L, :L]
-        mask = (x - cx) ** 2 + (y - cy) ** 2 <= radius_pixels ** 2
-        return mask
-
-    def is_fully_enclosed(self, raw_grid: np.ndarray, position: tuple[int, int]) -> bool:
-        """
-        Determine if the robot is fully enclosed by obstacles in the occupancy grid.
-
-        Args:
-            raw_grid (np.ndarray): 2D array representing the occupancy grid.
-            position (tuple[int, int]): Robot's position in grid coordinates (row, col).
-
-        Returns:
-            bool: True if fully enclosed, False otherwise.
-        """
-        if raw_grid is None or raw_grid.size == 0:
-            return False
-
-        h, w = raw_grid.shape
-        r0, c0 = position
-        if not (0 <= r0 < h and 0 <= c0 < w):
-            return False
-
-        occupancy = (raw_grid >= VAL_OCCUPIED)
-
-        r_pix = max(0, int(math.ceil(self.robot_r / self.resolution)))
-
-        # Build disk structuring element and dilate obstacle mask
-        if r_pix > 0:
-            structure = self._disk_structure(r_pix)
-            occupancy_dilated = ndimage.binary_dilation(occupancy, structure=structure)
-        else:
-            occupancy_dilated = occupancy.copy()
-
-        # free_eroded: True where center of robot can be placed (i.e. not inside inflated obstacles)
-        free_eroded = ~occupancy_dilated
-
-        # If robot is inside the inflated obstacle band, try to find a nearby start cell within a small neighborhood (search radius = max(1, r_pix)). If not found, avoid declaring enclosed (conservative).
-        start_r, start_c = r0, c0
-        if not free_eroded[start_r, start_c]:
-            search_px = max(1, r_pix)
-            found = False
-            for dr in range(-search_px, search_px + 1):
-                for dc in range(-search_px, search_px + 1):
-                    nr, nc = r0 + dr, c0 + dc
-                    if 0 <= nr < h and 0 <= nc < w and free_eroded[nr, nc]:
-                        start_r, start_c = nr, nc
-                        found = True
-                        break
-                if found:
-                    break
-            if not found:
-                # prevent false positive enclosure when robot is inside inflated obstacle area with no nearby free cell
-                self.get_logger().debug(
-                    f"is_fully_enclosed: robot center inside inflated obstacle area; "
-                    f"no nearby free cell (r_pix={r_pix}) — treating as NOT enclosed")
-                return False
-
-        # BFS over free_eroded (8-connected), if we can reach the map border -> NOT enclosed
-        visited = np.zeros_like(free_eroded, dtype=bool)
-        q = deque()
-        q.append((start_r, start_c))
-        visited[start_r, start_c] = True
-        directions = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]
-
-        while q:
-            x, y = q.popleft()
-            # If any reachable cell touches the map edge -> the robot can escape
-            if x == 0 or y == 0 or x == h - 1 or y == w - 1:
-                return False
-            for dx, dy in directions:
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < h and 0 <= ny < w and not visited[nx, ny] and free_eroded[nx, ny]:
-                    visited[nx, ny] = True
-                    q.append((nx, ny))
-
-        return True
-
 
     # -------------------- MAP DUMP --------------------
     def mark_frontiers_and_goal_on_dump_map(self):

@@ -390,6 +390,7 @@ class AreaExploration(Node):
 
         # Save overlays for dumping
         print(f"Planned {len(future_targets)} exploration goals, path length {len(self.path_world)}")
+        print("future_targets:", [(rc, len(vis)) for (rc, vis) in future_targets])
         self.future_targets = future_targets
         if future_targets:
             self.next_target_rc = future_targets[0][0]
@@ -588,7 +589,73 @@ class AreaExploration(Node):
 
     # ==================== Dumping ====================
 
-    def dump_map_visualization(self):
+    def plan_path_with_times(self, start_rc: tuple[int,int], goal_rc: tuple[int,int]):
+        """
+        Plan an A* path from start_rc to goal_rc and estimate travel times.
+        Returns: (path_rc, min_time, max_time, real_time)
+        - path_rc: list[(r,c)] of visited grid cells
+        - min_time: time if robot goes straight at max speed
+        - real_time: includes turning penalty
+        - max_time: real_time + noise proportional to path length
+        """
+        if self.grid is None:
+            self.get_logger().warn("No map grid available")
+            return [], 0.0, 0.0, 0.0
+
+        path = self.astar(self.grid, start_rc, goal_rc)
+        if not path:
+            self.get_logger().warn("No path found between given points")
+            return [], 0.0, 0.0, 0.0
+
+        # --- 1) Calculate geometric path length ---
+        dist_cells = 0.0
+        for i in range(1, len(path)):
+            dr = path[i][0] - path[i-1][0]
+            dc = path[i][1] - path[i-1][1]
+            dist_cells += math.hypot(dr, dc)
+
+        path_length_m = dist_cells * self.resolution
+
+        # --- 2) Minimum time (constant max speed) ---
+        v_max = max(self.speed, 0.05)
+        min_time = path_length_m / v_max
+
+        # --- 3) Real time: add turn penalty for each heading change ---
+        turn_penalty_factor = 0.5  # seconds per radian
+        real_time = 0.0
+        if len(path) >= 2:
+            real_time += (math.hypot(path[1][0]-path[0][0], path[1][1]-path[0][1]) * self.resolution) / v_max
+        for i in range(2, len(path)):
+            # step time
+            step_dist = math.hypot(path[i][0]-path[i-1][0], path[i][1]-path[i-1][1]) * self.resolution
+            real_time += step_dist / v_max
+
+            # turning effort
+            v1 = (path[i-1][0]-path[i-2][0], path[i-1][1]-path[i-2][1])
+            v2 = (path[i][0]-path[i-1][0], path[i][1]-path[i-1][1])
+            ang1 = math.atan2(v1[0], v1[1])
+            ang2 = math.atan2(v2[0], v2[1])
+            dtheta = abs((ang2 - ang1 + math.pi) % (2*math.pi) - math.pi)
+            real_time += dtheta * turn_penalty_factor
+
+        # --- 4) Maximum time: add noise factor based on path length ---
+        noise_factor = 0.1  # 10% of path length as time
+        max_time = real_time + path_length_m * noise_factor
+
+        return path, min_time, max_time, real_time
+
+
+    def dump_map_visualization(self, odom: Odometry=None, mapp: OccupancyGrid=None):
+        """
+        Combine the latest map and odometry data and save to a JSON file.
+
+        Args:
+            odom (Odometry, optional): _description_. Defaults to None.
+            mapp (OccupancyGrid, optional): _description_. Defaults to None.
+        """
+        if odom == None: odom = self.odom_msg
+        if mapp == None: mapp = self.map_msg
+        
         if not self.map_dump or self.map_msg is None:
             return
         dumped = np.array(self.map_msg.data, dtype=np.int16).reshape(self.height, self.width)
@@ -599,7 +666,7 @@ class AreaExploration(Node):
                 code_target = DUMP_TARGET_BASE + i  # 20..29
                 code_view = DUMP_VIEW_BASE + i      # 30..39
                 tr, tc = trc
-                if 0 <= tr < self.height and 0 <= tc < self.width and dumped[vr, vc] == VAL_UNKNOWN:
+                if 0 <= tr < self.height and 0 <= tc < self.width:
                     dumped[tr, tc] = code_target
                 for (vr, vc) in vis_set:
                     if 0 <= vr < self.height and 0 <= vc < self.width and dumped[vr, vc] == VAL_UNKNOWN:
@@ -611,12 +678,38 @@ class AreaExploration(Node):
                 code_view = DUMP_VIEW_BASE + self.dump_cycle      # 30..39
 
                 tr, tc = self.next_target_rc
-                if 0 <= tr < self.height and 0 <= tc < self.width and dumped[vr, vc] == VAL_UNKNOWN:
+                if 0 <= tr < self.height and 0 <= tc < self.width:
                     dumped[tr, tc] = code_target
 
                 for (vr, vc) in self.view_cells_for_dump:
                     if 0 <= vr < self.height and 0 <= vc < self.width and dumped[vr, vc] == VAL_UNKNOWN:
                         dumped[vr, vc] = code_view
+
+        # Time metrics
+        path_points = [self.world_to_grid(odom.pose.pose.position.x, odom.pose.pose.position.y)] + \
+            [self.world_to_grid(*rc) for (rc, vis) in self.future_targets]
+        _targets = []
+        for i in range(len(path_points)-1):
+            start, goal = path_points[i], path_points[i+1]
+            path, tmin, tmax, treal = self.plan_path_with_times(start, goal)
+            _targets.append({
+                'start': start,
+                'goal': goal,
+                'path_length_m': len(path) * self.resolution,
+                'path_cells': path,
+                'min_time': tmin,
+                'max_time': tmax,
+                'real_time': treal
+            })
+            
+        time_metrics = {
+            'num_future_targets': len(self.future_targets),
+            'targets': _targets,
+            'total_min_time': sum(t['min_time'] for t in _targets),
+            'total_max_time': sum(t['max_time'] for t in _targets),
+            'total_real_time': sum(t['real_time'] for t in _targets)
+        }
+            
 
         # Save JSON with overlays
         try:
@@ -653,7 +746,6 @@ class AreaExploration(Node):
                 'data': dumped.flatten().tolist()
             }
 
-            odom = self.odom_msg
             if odom is not None:
                 odom_data = {
                     'header': {
@@ -683,8 +775,8 @@ class AreaExploration(Node):
                 odom_data = None
 
             res_data = {'map': map_data}
-            if odom_data is not None:
-                res_data['odom'] = odom_data
+            res_data['odom'] = odom_data
+            res_data['time'] = time_metrics
 
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
             filename = os.path.join(self.output_directory, f'map_odom_{timestamp}.json')
