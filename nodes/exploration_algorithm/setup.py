@@ -4,6 +4,8 @@ package_name = 'exploration_algorithm'
 
 random_direction_node_name = 'random_direction_node'
 planned_node_name = 'planned_node'
+planned_node_fix_name = 'planned_node_fix'
+planned_node_name_v2 = 'planned_node_v2'
 boundary_finder_node_name = 'boundary_finder_node'
 boundary_finder_with_map_dump = 'boundary_finder_with_map_dump'
 
@@ -25,6 +27,8 @@ setup(
         'console_scripts': [
             f'{random_direction_node_name} = {package_name}.{random_direction_node_name}:main',
             f'{planned_node_name} = {package_name}.{planned_node_name}:main',
+            f'{planned_node_fix_name} = {package_name}.{planned_node_fix_name}:main',
+            f'{planned_node_name_v2} = {package_name}.{planned_node_name_v2}:main',
             f'{boundary_finder_node_name} = {package_name}.{boundary_finder_node_name}:main',
             f'{boundary_finder_with_map_dump} = {package_name}.{boundary_finder_with_map_dump}:main'
         ],
