@@ -149,7 +149,7 @@ docker_init_devcontainer:
 
 	cp $(DOCKER_DEVELOPMENT)devcontainer.json $(DOCKER_DEVELOPMENT)Dockerfile $(ROS2_WORKSPACE).devcontainer/
 
-	cp Makefile $(ROS2_WORKSPACE)
+	cp Makefile observer.py $(ROS2_WORKSPACE)
 
 	mkdir -p $(ROS2_WORKSPACE)$(VSCODE)
 	cp $(DOCKER_DEVELOPMENT)settings.json $(ROS2_WORKSPACE)$(VSCODE)
@@ -178,9 +178,11 @@ docker_setup_devcontainer:
 run_reminder:
 	@echo source /opt/ros/$(ROS_DISTRO)/setup.bash
 	@echo source install/setup.bash
+# source /opt/ros/humble/setup.bash
 
 run_node_quick_simulation:
 	$(MAKE) run_reminder
+	mkdir messages
 	export TURTLEBOT3_MODEL=waffle && ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py & \
 	ros2 launch nav2_bringup rviz_launch.py & \
 	ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file src/config/simulation/slam.yaml & \
@@ -204,4 +206,8 @@ run_node_time_predictor:
 
 run_node_boundary_exploration:
 	$(MAKE) run_reminder
-	ros2 run exploration_algorithm boundary_exploration_node ---ros-args --params-file src/config/exploration/params.yaml
+	ros2 run exploration_algorithm boundary_finder_node ---ros-args --params-file src/config/exploration/params.yaml
+
+run_node_planned_exploration:
+	$(MAKE) run_reminder
+	ros2 run exploration_algorithm planned_node_fix ---ros-args --params-file src/config/exploration/params.yaml
