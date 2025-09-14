@@ -34,6 +34,12 @@ VAL_LARGEST_OBSTACLE = 104
 
 VAL_OCCUPIED_MATRIX = 1.0
 
+# Dumping/overlay values
+# Next exploration target cell will be 20..29 (cycling)
+# Visible cells from that next target will be 30..39 (cycling)
+DUMP_TARGET_BASE = 20
+DUMP_VIEW_BASE = 30
+
 
 class BoundaryExploration(Node):
     def __init__(self):
@@ -85,6 +91,9 @@ class BoundaryExploration(Node):
         self.subscription = self.create_subscription(Odometry, 'odom', self.odom_callback, 10)
         self.subscription = self.create_subscription(LaserScan, 'scan', self.scan_callback, 10)
         self.publisher = self.create_publisher(Twist, 'cmd_vel', 10)
+        
+        # Multi-goal overlays (list of (rc, visibility_set))
+        self.future_targets: list[tuple[tuple[int, int], set[tuple[int, int]]]] = []
         
         # Initialize variables
         self.latest_map: OccupancyGrid | dict = None
@@ -154,6 +163,9 @@ class BoundaryExploration(Node):
                     self.path = pathGlobal
                 if isinstance(self.path, int) and self.path == -1:
                     self.get_logger().info("Exploration completed. Stopping the robot.")
+                    # last dump
+                    self.dump_combined_map_odom_targets_data(future_targets=-1)
+                    
                     sys.exit()
 
                 self.c = int((self.path[-1][0] - self.originX)/self.resolution) 
@@ -162,7 +174,7 @@ class BoundaryExploration(Node):
                 self.i = 0
                 self.get_logger().info(f"New target set: ({self.path[-1][0]:.2f}, {self.path[-1][1]:.2f})")
                 
-                self.mark_frontiers_and_goal_on_dump_map()
+                self.mark_planned_path_on_dump_map()
                 
                 t = self.path_length(self.path)/self.speed
                 t = t - 0.2
@@ -818,45 +830,49 @@ class BoundaryExploration(Node):
         return v,w
 
     # -------------------- MAP DUMP --------------------
-    def mark_frontiers_and_goal_on_dump_map(self):
-        """
-        Mark frontiers, next goal, and largest obstacle on the latest map data for visualization and saving.
+    def mark_planned_path_on_dump_map(self):
+        """"
+        Mark planned path with the visibility simulation on the latest map data for visualization and saving.
         """
         if self.map_dump and self.latest_map:
             dumped_map = np.array(self.latest_map.data).reshape(self.height, self.width)
-
-            # Mark frontiers
-            if hasattr(self, 'last_frontier_groups'):
-                for gid, frontier_group in self.last_frontier_groups:
-                    for (fx, fy) in frontier_group:
-                        dumped_map[fx][fy] = VAL_FRONTIER
-
-            # Mark next goal
-            if hasattr(self, 'c') and hasattr(self, 'r'):
-                dumped_map[self.r][self.c] = VAL_NEXT_GOAL
-                
-            # Mark largest obstacle
-            if hasattr(self, 'largest_obstacle') and self.largest_obstacle:
-                for (ox, oy) in self.largest_obstacle:
-                    dumped_map[ox][oy] = VAL_LARGEST_OBSTACLE
+            
+            # Mark future targets and their simulated coverage
+            # If we have a sequence of future targets, overlay them with 20..29 for targets and 30..39 for coverage
+            if hasattr(self, 'future_targets') and self.future_targets:
+                for i, (trc, vis_set) in enumerate(self.future_targets[:10]):
+                    code_target = DUMP_TARGET_BASE + i  # 20..29
+                    code_view = DUMP_VIEW_BASE + i      # 30..39
+                    tr, tc = trc
+                    if 0 <= tr < self.height and 0 <= tc < self.width:
+                        dumped_map[tr, tc] = code_target
+                    for (vr, vc) in vis_set:
+                        if 0 <= vr < self.height and 0 <= vc < self.width and dumped_map[vr, vc] == VAL_UNKNOWN:
+                            dumped_map[vr, vc] = code_view
 
             # Update map data
             self.latest_map.data = dumped_map.flatten().tolist()
 
             # Save map + odometry
-            self.combine_map_odom_data()
+            self.dump_combined_map_odom_targets_data()
 
 
-    def combine_map_odom_data(self, odom: Odometry=None, mapp: OccupancyGrid=None):
+    def dump_combined_map_odom_targets_data(
+        self,
+        odom: Odometry=None,
+        mapp: OccupancyGrid=None,
+        future_targets: list[tuple[tuple[int, int], set[tuple[int, int]]]] = None):
         """
         Combine the latest map and odometry data and save to a JSON file.
 
         Args:
             odom (Odometry, optional): _description_. Defaults to None.
             mapp (OccupancyGrid, optional): _description_. Defaults to None.
+            future_targets (list[tuple[tuple[int, int], set[tuple[int, int]]]], optional): _description_. Defaults to None.
         """
         if odom == None: odom = self.latest_odom
         if mapp == None: mapp = self.latest_map
+        if future_targets == None: future_targets = self.future_targets
 
         try:
             map_data = {
@@ -921,6 +937,17 @@ class BoundaryExploration(Node):
                 'odom': odom_data,
                 'map': map_data
             }
+            
+            if future_targets == -1:
+                time_metrics = {
+                    "num_future_targets": 0,
+                    "targets": [],
+                    "total_min_time": 0.0,
+                    "total_max_time": 0.0,
+                    "total_real_time": 0.0,
+                    "total_path_length_m": 0.0
+                }
+                res_data['time'] = time_metrics
 
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
             filename = os.path.join(self.output_directory, f'map_odom_{timestamp}.json')
