@@ -1,7 +1,12 @@
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
+from json import dumps, loads
+
 from time import sleep
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 import math
 import heapq
@@ -18,6 +23,7 @@ VAL_OCCUPIED = 100  # cells with 100 are obstacles (inflated)
 DUMP_TARGET_BASE = 20  # 20..29
 DUMP_VIEW_BASE   = 30  # 30..39
 
+# ---- global state (filled by init_from_dump) ---------------------------------
 STATE: Dict[str, object] = {
     "grid": None,               # np.ndarray (H, W), int
     "height": None,             # int
@@ -26,17 +32,17 @@ STATE: Dict[str, object] = {
     "origin_xy": None,          # (x0, y0) world coords of cell (0,0)
     "robot_xy": None,           # (x, y) world coords
     "robot_rc": None,           # (r, c) grid coords
-    "robot_fov_deg": 270.0,     # default
+    "robot_r": 0.18,            # robot radius in meters (collision buffer)
+    "robot_fov_deg": 120.0,     # default
     "laser_max_range": 0.5,     # meters
-    "robot_max_speed": 0.18,     # m/s
+    "robot_max_speed": 0.18,    # m/s
 }
 
-def init_from_dump(
-        json_path: str,
-        robot_fov_deg: float = 120.0,
-        laser_max_range: float = 5.0,
-        robot_max_speed: float = 0.4
-    ) -> None:
+# ---- init / conversions -------------------------------------------------------
+def init_from_dump(json_path: str,
+                   robot_fov_deg: float = 120.0,
+                   laser_max_range: float = 5.0,
+                   robot_max_speed: float = 0.4) -> None:
     """Load a dumped map/odom JSON (same structure as provided) and populate STATE."""
     with open(json_path, "r") as f:
         data = json.load(f)
@@ -69,13 +75,13 @@ def init_from_dump(
     })
 
 def world_to_grid(x: float, y: float) -> Tuple[int,int]:
-    x0, y0 = STATE["origin_xy"]
-    res = STATE["resolution"]
+    x0, y0 = STATE["origin_xy"]  # type: ignore
+    res = STATE["resolution"]    # type: ignore
     r = int((y - y0) / res)
     c = int((x - x0) / res)
     return (r, c)
 
-
+# ---- low-level helpers --------------------------------------------------------
 def _in_bounds(r: int, c: int) -> bool:
     return 0 <= r < STATE["height"] and 0 <= c < STATE["width"]
 
@@ -90,24 +96,80 @@ def _neighbors8(r: int, c: int) -> List[Tuple[int, int]]:
                 nbrs.append((rr, cc))
     return nbrs
 
-def _is_free(v: int) -> bool:
-    return v == VAL_FREE
+def _is_free(v: int) -> bool: return v == VAL_FREE
+def _is_unknown(v: int) -> bool: return v < 0
+def _is_occupied(v: int) -> bool: return v >= VAL_OCCUPIED
 
-def _is_unknown(v: int) -> bool:
-    return v < 0
-
-def _is_occupied(v: int) -> bool:
-    return v >= VAL_OCCUPIED
-
+# def _grid_to_planner_mask(grid: np.ndarray) -> np.ndarray:
+#     """
+#     Binary planning mask: 0 = traversable, 1 = blocked.
+#     Unknown and occupied are blocked; free is traversable.
+#     """
+#     mask = np.ones_like(grid, dtype=np.uint8)
+#     mask[grid == VAL_FREE] = 0
+#     return mask
 
 def _grid_to_planner_mask(grid: np.ndarray) -> np.ndarray:
     """
-    Binary planning mask: 0 = traversable, 1 = blocked.
-    Unknown and occupied are blocked; free is traversable.
+    Binary planning mask with robot-radius inflation:
+      0 = traversable, 1 = blocked.
+    Unknown and occupied are blocked; additionally inflate all blocked cells
+    AND the map boundary by ceil(robot_r / resolution) cells so the robot
+    (treated as a disc) can't clip obstacles or escape the map.
     """
-    mask = np.ones_like(grid, dtype=np.uint8)
-    mask[grid == VAL_FREE] = 0
-    return mask
+    H, W = grid.shape
+    res = float(STATE["resolution"])
+    robot_r_m = float(STATE.get("robot_r", 0.0))
+    r_cells = int(math.ceil(robot_r_m / max(res, 1e-9)))
+
+    # Base: unknown or occupied -> 1, free -> 0
+    base = np.ones((H, W), dtype=np.uint8)
+    base[grid == VAL_FREE] = 0
+
+    if r_cells <= 0:
+        return base  # no inflation requested
+
+    inflated = base.copy()
+
+    # 1) Inflate map boundaries by r_cells (prevents escaping)
+    inflated[:r_cells, :] = 1
+    inflated[-r_cells:, :] = 1
+    inflated[:, :r_cells] = 1
+    inflated[:, -r_cells:] = 1
+
+    # 2) Inflate obstacles/unknowns by Chebyshev radius r_cells
+    #    (square footprint approx; safe for a disc robot).
+    blocked_rs, blocked_cs = np.where(base == 1)
+    for r0, c0 in zip(blocked_rs, blocked_cs):
+        rmin = max(0, r0 - r_cells)
+        rmax = min(H, r0 + r_cells + 1)
+        cmin = max(0, c0 - r_cells)
+        cmax = min(W, c0 + r_cells + 1)
+        inflated[rmin:rmax, cmin:cmax] = 1
+
+    return inflated
+
+def _nearest_traversable(mask: np.ndarray, rc: Tuple[int, int], max_radius: int = 10) -> Optional[Tuple[int, int]]:
+    """Find nearest cell with mask==0 (free) within Chebyshev radius."""
+    r0, c0 = rc
+    H, W = mask.shape
+    if _in_bounds(r0, c0) and mask[r0, c0] == 0:
+        return (r0, c0)
+    for rad in range(1, max_radius + 1):
+        rmin = max(0, r0 - rad); rmax = min(H - 1, r0 + rad)
+        cmin = max(0, c0 - rad); cmax = min(W - 1, c0 + rad)
+        # check the ring at distance 'rad'
+        for r in range(rmin, rmax + 1):
+            for c in (cmin, cmax):
+                if mask[r, c] == 0:
+                    return (r, c)
+        for c in range(cmin, cmax + 1):
+            for r in (rmin, rmax):
+                if mask[r, c] == 0:
+                    return (r, c)
+    return None
+
+
 
 def _astar(mask: np.ndarray, start: Tuple[int,int], goal: Tuple[int,int]) -> List[Tuple[int,int]]:
     """
@@ -187,8 +249,8 @@ def _centroid_rc(cells: Set[Tuple[int,int]]) -> Tuple[int,int]:
     rs = [r for r, _ in cells]; cs = [c for _, c in cells]
     r = int(round(sum(rs) / max(1, len(rs))))
     c = int(round(sum(cs) / max(1, len(cs))))
-    r = min(max(r, 0), STATE["height"] - 1)
-    c = min(max(c, 0), STATE["width"] - 1)
+    r = min(max(r, 0), STATE["height"] - 1)  # type: ignore
+    c = min(max(c, 0), STATE["width"] - 1)   # type: ignore
     return (r, c)
 
 def _nearest_free(grid: np.ndarray, rc: Tuple[int,int], max_radius: int = 5) -> Optional[Tuple[int,int]]:
@@ -203,57 +265,77 @@ def _nearest_free(grid: np.ndarray, rc: Tuple[int,int], max_radius: int = 5) -> 
                 if _is_free(grid[r, c]): return (r, c)
     return None
 
-def _cast_ray_unknowns(occ: np.ndarray, start_rc: Tuple[int,int], theta_rad: float, max_range_cells: int) -> Set[Tuple[int,int]]:
+# def _cast_ray_unknowns(occ: np.ndarray, start_rc: Tuple[int,int], theta_rad: float, max_range_cells: int) -> Set[Tuple[int,int]]:
+#     H, W = occ.shape
+#     sr, sc = start_rc
+#     x = sc + 0.5; y = sr + 0.5
+#     dx = math.cos(theta_rad); dy = math.sin(theta_rad)
+#     step = 0.25
+#     steps = int(max_range_cells / step) + 1
+#     seen: Set[Tuple[int,int]] = set()
+#     for _ in range(steps):
+#         x += dx * step; y += dy * step
+#         r = int(y); c = int(x)
+#         if r < 0 or r >= H or c < 0 or c >= W: break
+#         v = occ[r, c]
+#         if _is_occupied(v): break
+#         if _is_unknown(v): seen.add((r, c))
+#     return seen
+
+def _cast_ray_unknowns(occ: np.ndarray,
+                       start_rc: tuple[int, int],
+                       theta_rad: float,
+                       max_range_cells: int) -> set[tuple[int, int]]:
     """
-    Ray-cast from start_rc at angle theta_rad (radians) up to max_range_cells (in CELLS).
-    Adds UNKNOWN cells seen along the ray until hitting an occupied cell, the map boundary,
-    or exceeding the distance budget. Unknown is transparent; occupied blocks.
+    DDA-style ray cast from start_rc at angle theta_rad (radians), limited to max_range_cells.
+    - Unknown cells (<0) are recorded as "seen".
+    - Occupied cells block LOS (treat both binary 1 and >= VAL_OCCUPIED as walls).
+    - Stops on map boundary or when distance budget is exhausted.
+    Returns a set of (r, c) UNKNOWN cells seen along the ray.
     """
     H, W = occ.shape
     sr, sc = start_rc
 
-    # Position at cell center (grid coords); direction in "cells"
-    x = sc + 0.5
-    y = sr + 0.5
-    dx = math.cos(theta_rad)
-    dy = math.sin(theta_rad)
+    # Direction in grid space (cells)
+    dr = math.sin(theta_rad)
+    dc = math.cos(theta_rad)
 
-    # Move in fractional cells
-    step = 0.25  # cells per integration step
+    # Start from the center of the start cell
+    rr = sr + 0.5
+    cc = sc + 0.5
 
-    # Robust distance budget:
-    # - ensure int >= 1
-    # - clamp to map diagonal to avoid pathological huge ranges from bad resolution values
-    max_cells = max(1, int(max_range_cells))
-    max_cells = min(max_cells, int(math.hypot(H, W)))
+    seen: set[tuple[int, int]] = set()
 
-    traveled = 0.0
-    seen: Set[Tuple[int,int]] = set()
+    # Robust step cap: at least 1, at most map diagonal (prevents runaway if params are off)
+    steps = max(1, int(max_range_cells))
+    steps = min(steps, int(math.hypot(H, W)))
 
-    while traveled < max_cells:
-        x += dx * step
-        y += dy * step
-        traveled += step
+    for _ in range(steps):
+        rr += dr
+        cc += dc
+        ir = int(rr)
+        ic = int(cc)
 
-        r = int(y)
-        c = int(x)
-        if r < 0 or r >= H or c < 0 or c >= W:
+        # Out of bounds -> stop this ray
+        if ir < 0 or ir >= H or ic < 0 or ic >= W:
             break
 
-        val = occ[r, c]
-        # occupied blocks LOS
-        if val >= VAL_OCCUPIED:
+        val = occ[ir, ic]
+
+        # Record unknown cells as visible
+        if val < 0:  # VAL_UNKNOWN
+            seen.add((ir, ic))
+
+        # Occupied blocks LOS. Support either binary mask (1) or occupancy (>= VAL_OCCUPIED).
+        if val == 1 or (VAL_OCCUPIED is not None and val >= VAL_OCCUPIED):
             break
-        # unknown is visible (but does not block)
-        if val < 0:
-            seen.add((r, c))
 
     return seen
 
 def _visible_unknowns_best_fov(occ: np.ndarray, at_rc: Tuple[int,int],
                                max_range_cells: int, fov_deg: float,
                                angle_step_deg: float = 5.0) -> Set[Tuple[int,int]]:
-    n_angles = max(1, int(round(360.0 / angle_step_deg)))
+    n_angles = max(1, int(round(270.0 / angle_step_deg)))
     base_angles = [math.radians(i * angle_step_deg) for i in range(n_angles)]
     rays: List[Set[Tuple[int,int]]] = [
         _cast_ray_unknowns(occ, at_rc, th, max_range_cells) for th in base_angles
@@ -304,58 +386,181 @@ def _line_cells(start: Tuple[int,int], goal: Tuple[int,int]) -> List[Tuple[int,i
     return cells
 
 # ---- core methods -------------------------------------------------------------
+# def plan_next_path():
+#     """
+#     Plan a multi-goal exploration path up to 10 future goals.
+#     For each step, choose the goal that maximizes simulated new coverage (unknown cells seen)
+#     within STATE['robot_fov_deg'] and within STATE['laser_max_range'].
+#     For steps > 1, the coverage is evaluated on a simulated map where cells revealed by prior
+#     selected goals are treated as known (set to VAL_FREE). The final path concatenates A* paths
+#     between successive goals. Overlays are prepared:
+#       - overlay_goals[r,c] = 20 + i for the i-th future goal (0-indexed),
+#       - overlay_coverage[r,c] = 30 + i for cells covered from that goal.
+#     Returns a dict with: future_goals, coverage_sets, final_path, overlay_goals, overlay_coverage
+#     """
+#     assert STATE["grid"] is not None, "Call init_from_dump() first."
+
+#     grid0: np.ndarray = STATE["grid"]  # type: ignore
+#     res: float = STATE["resolution"]   # type: ignore
+#     fov_deg: float = STATE["robot_fov_deg"]  # type: ignore
+#     max_range_cells: int = max(1, int(STATE["laser_max_range"] / max(res, 1e-9)))  # type: ignore
+
+#     occ_sim = grid0.copy()
+#     start_rc: Tuple[int,int] = tuple(STATE["robot_rc"])  # type: ignore
+
+#     future_goals: List[Tuple[int,int]] = []
+#     coverage_sets: List[Set[Tuple[int,int]]] = []
+
+#     # current_rc = _nearest_free(occ_sim, start_rc, max_radius=5) or start_rc
+#     current_rc = _nearest_traversable(_grid_to_planner_mask(occ_sim), start_rc, max_radius=10) or start_rc
+
+#     steps_limit = 10
+
+#     for _ in range(steps_limit):
+#         groups = _frontiers(occ_sim)
+#         if not groups: break
+
+#         best: Optional[Tuple[int,int]] = None
+#         best_cov: Set[Tuple[int,int]] = set()
+#         best_score: Tuple[int,int] = (-1, -10**9)  # (coverage_size, -path_len)
+
+#         mask = _grid_to_planner_mask(occ_sim)
+
+#         for comp in groups:
+#             cand = _centroid_rc(comp)
+#             cand = _nearest_traversable(mask, cand, max_radius=10) or cand
+#             if not _in_bounds(*cand) or mask[cand[0], cand[1]] == 1:
+#                 continue
+
+#             path = _astar(mask, current_rc, cand)
+#             if not path:  # still consider coverage but strongly penalize unreachable
+#                 cov = _visible_unknowns_best_fov(occ_sim, cand, max_range_cells, fov_deg, angle_step_deg=5.0)
+#                 cov_size = len(cov)
+#                 score = (cov_size, -10**9)  # unreachable -> worst path len
+#             else:
+#                 cov = _visible_unknowns_best_fov(occ_sim, cand, max_range_cells, fov_deg, angle_step_deg=5.0)
+#                 cov_size = len(cov)
+#                 score = (cov_size, -len(path))
+
+#             if score > best_score:
+#                 best_score = score
+#                 best = cand
+#                 best_cov = cov
+
+#         if best is None or len(best_cov) == 0: break
+
+#         future_goals.append(best)
+#         coverage_sets.append(best_cov)
+#         for (rr, cc) in best_cov:
+#             occ_sim[rr, cc] = VAL_FREE
+#         current_rc = best
+
+#     overlay_goals = np.zeros_like(grid0, dtype=int)
+#     overlay_cov = np.zeros_like(grid0, dtype=int)
+#     for i, (goal_rc, cov_set) in enumerate(zip(future_goals, coverage_sets)):
+#         gr, gc = goal_rc
+#         overlay_goals[gr, gc] = DUMP_TARGET_BASE + i
+#         for (rr, cc) in cov_set:
+#             overlay_cov[rr, cc] = DUMP_VIEW_BASE + i
+
+#     # Final path: connect goals; if A* fails for a leg, fall back to straight line.
+#     final_path: List[Tuple[int,int]] = []
+#     if future_goals:
+#         mask0 = _grid_to_planner_mask(grid0)
+#         cursor = _nearest_free(grid0, start_rc, max_radius=5) or start_rc
+#         for goal in future_goals:
+#             path = _astar(mask0, cursor, goal)
+#             if not path:
+#                 # Fallback: straight line but clamped to traversable cells
+#                 line = _line_cells(cursor, goal)
+#                 clamped = []
+#                 for p in line:
+#                     if mask0[p[0], p[1]] == 0:
+#                         clamped.append(p)
+#                     else:
+#                         break
+#                 path = clamped
+#             if path:
+#                 final_path += path[1:] if final_path else path
+#                 cursor = path[-1]
+#             else:
+#                 # cannot progress to this goal; stop stitching further legs
+#                 break
+#             cursor = goal
+
+#     return {
+#         "future_goals": future_goals,
+#         "coverage_sets": coverage_sets,
+#         "final_path": final_path,
+#         "overlay_goals": overlay_goals,
+#         "overlay_coverage": overlay_cov,
+#     }
+
 def plan_next_path():
     """
-    Plan a multi-goal exploration path up to 10 future goals.
-    For each step, choose the goal that maximizes simulated new coverage (unknown cells seen)
-    within STATE['robot_fov_deg'] and within STATE['laser_max_range'].
-    For steps > 1, the coverage is evaluated on a simulated map where cells revealed by prior
-    selected goals are treated as known (set to VAL_FREE). The final path concatenates A* paths
-    between successive goals. Overlays are prepared:
-      - overlay_goals[r,c] = 20 + i for the i-th future goal (0-indexed),
-      - overlay_coverage[r,c] = 30 + i for cells covered from that goal.
-    Returns a dict with: future_goals, coverage_sets, final_path, overlay_goals, overlay_coverage
+    Multi-goal exploration with simulated visibility:
+    - Before planning, perform a 360° ray-cast from the current cell and mark seen unknowns as known.
+    - Iteratively choose the next goal that maximizes NEW unknown coverage (also via 360° casting).
+    - Stop when there are no frontiers, no new coverage, or no unknowns remain (does NOT force 10 goals).
+    - Return overlays and the concatenated path between chosen goals (with straight-line fallback clamped to mask).
     """
     assert STATE["grid"] is not None, "Call init_from_dump() first."
 
-    grid0: np.ndarray = STATE["grid"]
-    res: float = STATE["resolution"]
-    fov_deg: float = STATE["robot_fov_deg"]
-    max_range_cells: int = max(1, int(STATE["laser_max_range"] / max(res, 1e-9)))
+    grid0: np.ndarray = STATE["grid"]  # type: ignore
+    res: float = STATE["resolution"]   # type: ignore
+    max_range_cells: int = max(1, int(STATE["laser_max_range"] / max(res, 1e-9)))  # type: ignore
 
+    # Simulated occupancy we will "reveal" using visibility
     occ_sim = grid0.copy()
-    start_rc: Tuple[int,int] = tuple(STATE["robot_rc"])
+    start_rc: Tuple[int,int] = tuple(STATE["robot_rc"])  # type: ignore
 
     future_goals: List[Tuple[int,int]] = []
     coverage_sets: List[Set[Tuple[int,int]]] = []
 
-    current_rc = _nearest_free(occ_sim, start_rc, max_radius=5) or start_rc
-    steps_limit = 10
+    # Start on a traversable cell (radius-aware mask)
+    current_rc = _nearest_traversable(_grid_to_planner_mask(occ_sim), start_rc, max_radius=10) or start_rc
 
+    # --- Pre-scan from the current location: mark what the robot already sees as known
+    initial_seen = _visible_unknowns_best_fov(occ_sim, current_rc, max_range_cells, fov_deg=270.0, angle_step_deg=1.0)
+    for (r, c) in initial_seen:
+        occ_sim[r, c] = VAL_FREE
+
+    # Plan iteratively; do NOT force 10 steps
+    steps_limit = 10  # safety cap only; we will break early whenever appropriate
     for _ in range(steps_limit):
+        # If nothing unknown remains, stop
+        if not np.any(occ_sim < 0):
+            break
+
+        # Recompute frontiers on the simulated map; if none, we're done
         groups = _frontiers(occ_sim)
-        if not groups: break
+        if not groups:
+            break
+
+        mask = _grid_to_planner_mask(occ_sim)
 
         best: Optional[Tuple[int,int]] = None
         best_cov: Set[Tuple[int,int]] = set()
         best_score: Tuple[int,int] = (-1, -10**9)  # (coverage_size, -path_len)
 
-        mask = _grid_to_planner_mask(occ_sim)
-
         for comp in groups:
             cand = _centroid_rc(comp)
-            cand = _nearest_free(occ_sim, cand, max_radius=5) or cand
+            # Move candidate to a traversable cell (respect robot radius)
+            cand = _nearest_traversable(mask, cand, max_radius=10) or cand
             if not _in_bounds(*cand) or mask[cand[0], cand[1]] == 1:
                 continue
 
+            # Reachability
             path = _astar(mask, current_rc, cand)
-            if not path:  # still consider coverage but strongly penalize unreachable
-                cov = _visible_unknowns_best_fov(occ_sim, cand, max_range_cells, fov_deg, angle_step_deg=5.0)
-                cov_size = len(cov)
-                score = (cov_size, -10**9)  # unreachable -> worst path len
+
+            # Coverage from candidate on CURRENT simulated map using 360° / 1° rays
+            cov = _visible_unknowns_best_fov(occ_sim, cand, max_range_cells, fov_deg=270.0, angle_step_deg=1.0)
+            cov_size = len(cov)
+
+            if not path:
+                # unreachable: keep but heavily penalize by path length
+                score = (cov_size, -10**9)
             else:
-                cov = _visible_unknowns_best_fov(occ_sim, cand, max_range_cells, fov_deg, angle_step_deg=5.0)
-                cov_size = len(cov)
                 score = (cov_size, -len(path))
 
             if score > best_score:
@@ -363,14 +568,18 @@ def plan_next_path():
                 best = cand
                 best_cov = cov
 
-        if best is None or len(best_cov) == 0: break
+        # No candidate yields new coverage -> stop
+        if best is None or len(best_cov) == 0:
+            break
 
+        # Accept goal; reveal coverage so the next iteration won't plan to what will already be known
         future_goals.append(best)
         coverage_sets.append(best_cov)
         for (rr, cc) in best_cov:
             occ_sim[rr, cc] = VAL_FREE
         current_rc = best
 
+    # Build overlays
     overlay_goals = np.zeros_like(grid0, dtype=int)
     overlay_cov = np.zeros_like(grid0, dtype=int)
     for i, (goal_rc, cov_set) in enumerate(zip(future_goals, coverage_sets)):
@@ -379,17 +588,27 @@ def plan_next_path():
         for (rr, cc) in cov_set:
             overlay_cov[rr, cc] = DUMP_VIEW_BASE + i
 
-    # Final path: connect goals; if A* fails for a leg, fall back to straight line.
+    # Stitch final path across chosen goals; if A* fails for a leg, clamp a straight line to mask
     final_path: List[Tuple[int,int]] = []
     if future_goals:
         mask0 = _grid_to_planner_mask(grid0)
-        cursor = _nearest_free(grid0, start_rc, max_radius=5) or start_rc
+        cursor = _nearest_traversable(mask0, start_rc, max_radius=10) or start_rc
         for goal in future_goals:
             path = _astar(mask0, cursor, goal)
             if not path:
-                path = _line_cells(cursor, goal)
-            final_path += path[1:] if final_path else path
-            cursor = goal
+                line = _line_cells(cursor, goal)
+                clamped = []
+                for p in line:
+                    if mask0[p[0], p[1]] == 0:
+                        clamped.append(p)
+                    else:
+                        break
+                path = clamped
+            if path:
+                final_path += path[1:] if final_path else path
+                cursor = path[-1]
+            else:
+                break
 
     return {
         "future_goals": future_goals,
@@ -398,6 +617,7 @@ def plan_next_path():
         "overlay_goals": overlay_goals,
         "overlay_coverage": overlay_cov,
     }
+
 
 def plan_path_with_times(start_rc: Tuple[int,int], goal_rc: Tuple[int,int]):
     """
@@ -409,14 +629,14 @@ def plan_path_with_times(start_rc: Tuple[int,int], goal_rc: Tuple[int,int]):
     - max_time: real_time + noise proportional to path length
     """
     assert STATE["grid"] is not None, "Call init_from_dump() first."
-    grid: np.ndarray = STATE["grid"]
-    res: float = STATE["resolution"]
-    vmax: float = max(STATE["robot_max_speed"], 1e-6)
+    grid: np.ndarray = STATE["grid"]  # type: ignore
+    res: float = STATE["resolution"]  # type: ignore
+    vmax: float = max(STATE["robot_max_speed"], 1e-6)  # type: ignore
 
     mask = _grid_to_planner_mask(grid)
     sr, sc = start_rc; gr, gc = goal_rc
-    if _in_bounds(sr, sc) and not _is_occupied(grid[sr, sc]): mask[sr, sc] = 0
-    if _in_bounds(gr, gc) and not _is_occupied(grid[gr, gc]): mask[gr, gc] = 0
+    # if _in_bounds(sr, sc) and not _is_occupied(grid[sr, sc]): mask[sr, sc] = 0
+    # if _in_bounds(gr, gc) and not _is_occupied(grid[gr, gc]): mask[gr, gc] = 0
 
     path: List[Tuple[int,int]] = _astar(mask, start_rc, goal_rc)
 
@@ -459,17 +679,27 @@ def plan_path_with_times(start_rc: Tuple[int,int], goal_rc: Tuple[int,int]):
 def updater(json_file_path: str = None):
     parser = argparse.ArgumentParser(description="Update dumped map/odom JSON with time metrics.")
     parser.add_argument("--fov", type=float, default=120.0, help="Robot FOV in degrees.")
-    parser.add_argument("--range", dest="laser_range", type=float, default=5.0, help="Laser max range (m).")
+    parser.add_argument("--range", dest="laser_range", type=float, default=0.5, help="Laser max range (m).")
     parser.add_argument("--speed", type=float, default=0.4, help="Robot max speed (m/s).")
+    parser.add_argument("--robot-r", type=float, default=0.18, help="Robot radius (m).")
+
     args = parser.parse_args()
 
+    data = dict()
     # Load input JSON
     with open(json_file_path, "r") as f:
         data = json.load(f)
+        
+    if "time" in data:
+        print(f"Exploration time metrics already present in '{json_file_path}'.")
+        return
 
     # Initialize planner state
     init_from_dump(json_file_path, robot_fov_deg=args.fov,
                    laser_max_range=args.laser_range, robot_max_speed=args.speed)
+    
+    STATE["robot_r"] = float(args.robot_r)
+
 
     # Plan future goals & coverage
     planning = plan_next_path()
@@ -477,7 +707,7 @@ def updater(json_file_path: str = None):
     coverage_sets: List[Set[Tuple[int,int]]] = planning["coverage_sets"]
 
     # ---- Time metrics ---------------------------------------------------------
-    start_rc = tuple(STATE["robot_rc"])
+    start_rc = tuple(STATE["robot_rc"])  # type: ignore
     path_points: List[Tuple[int,int]] = [start_rc] + future_goals
 
     _targets = []
@@ -499,13 +729,14 @@ def updater(json_file_path: str = None):
         "targets": _targets,
         "total_min_time": sum(t["min_time"] for t in _targets) if _targets else 0.0,
         "total_max_time": sum(t["max_time"] for t in _targets) if _targets else 0.0,
-        "total_real_time": sum(t["real_time"] for t in _targets) if _targets else 0.0
+        "total_real_time": sum(t["real_time"] for t in _targets) if _targets else 0.0,
+        "total_path_length_m": sum(t["path_length_m"] for t in _targets) if _targets else 0.0
     }
 
     # ---- POV / visibility overlay written into map.data -----------------------
     # Reshape map.data, overlay targets and simulated coverage like your ROS method.
-    height = STATE["height"]
-    width = STATE["width"]
+    height = STATE["height"]  # type: ignore
+    width = STATE["width"]    # type: ignore
     dumped_map = np.array(data["map"]["data"], dtype=int).reshape(height, width)
 
     for i, (trc, vis_set) in enumerate(zip(future_goals[:10], coverage_sets[:10])):
@@ -526,6 +757,7 @@ def updater(json_file_path: str = None):
         json.dump(data, f, indent=2)
 
     print(f"Updated '{json_file_path}' with time metrics and POV overlays.")
+    # print(json.dumps(time_metrics, indent=2))
 
 
 class MyHandler(FileSystemEventHandler):
@@ -537,13 +769,22 @@ class MyHandler(FileSystemEventHandler):
         sleep(0.5)  # wait for file to be fully written
         if event.src_path.endswith('.json'):
             updater(str(event.src_path))
+                
+                
+        
 
-if __name__ == "__main__":
-    event_handler = MyHandler()
-    observer = Observer()
-    observer.schedule(event_handler, path='./messages/', recursive=False)
-    observer.start()
+event_handler = MyHandler()
+observer = Observer()
+observer.schedule(event_handler, path='./messages/', recursive=False)
+observer.start()
 
-    input('press Enter to quit')
+input('press Enter to quit')
 
-    observer.stop()
+observer.stop()
+
+# if __name__ == "__main__":
+#     # experiment_02_env_waffle
+#     updater("./messages/map_odom_20250914_174840_753783.json")
+#     updater("./messages/map_odom_20250914_174847_661649.json")
+#     updater("./messages/map_odom_20250914_174908_222573.json")
+#     updater("./messages/map_odom_20250914_174921_808843.json")
