@@ -182,7 +182,7 @@ run_reminder:
 
 run_node_quick_simulation:
 	$(MAKE) run_reminder
-	mkdir messages
+	mkdir -p messages
 	export TURTLEBOT3_MODEL=waffle && ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py & \
 	ros2 launch nav2_bringup rviz_launch.py & \
 	ros2 run slam_toolbox async_slam_toolbox_node --ros-args --params-file src/config/simulation/slam.yaml & \
